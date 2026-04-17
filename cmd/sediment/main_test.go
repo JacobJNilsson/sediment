@@ -843,3 +843,226 @@ func TestCmdExcavateInvalidDB(t *testing.T) {
 	}
 }
 
+// --- erode tests ---
+
+func TestCmdErodeNoMemories(t *testing.T) {
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			listAllFn: func() ([]*model.Memory, error) {
+				return nil, nil
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	if err := cmdErode([]string{}, &buf); err != nil {
+		t.Fatalf("erode: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if result["processed"].(float64) != 0 {
+		t.Errorf("processed = %v, want 0", result["processed"])
+	}
+	if result["updated"].(float64) != 0 {
+		t.Errorf("updated = %v, want 0", result["updated"])
+	}
+}
+
+func TestCmdErodeWithTransitions(t *testing.T) {
+	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	restoreTime := setTimeNow(fixedTime)
+	defer restoreTime()
+
+	// Memory that was active 200 hours ago with confidence 0.5:
+	// 0.5 * e^(-0.01*200) = 0.5 * e^(-2) ≈ 0.0677 -> below archive threshold (0.1)
+	oldMem := &model.Memory{
+		ID:             "old-mem",
+		Content:        "stale fact",
+		Confidence:     0.5,
+		State:          model.StateActive,
+		AccessCount:    1,
+		CreatedAt:      fixedTime.Add(-200 * time.Hour),
+		UpdatedAt:      fixedTime.Add(-200 * time.Hour),
+		LastAccessedAt: fixedTime.Add(-200 * time.Hour),
+		Tags:           []string{"fact"},
+	}
+
+	// Fresh memory: accessed now, no decay.
+	freshMem := &model.Memory{
+		ID:             "fresh-mem",
+		Content:        "new fact",
+		Confidence:     0.9,
+		State:          model.StateActive,
+		LastAccessedAt: fixedTime,
+		UpdatedAt:      fixedTime,
+		Tags:           []string{},
+	}
+
+	var updatedIDs []string
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			listAllFn: func() ([]*model.Memory, error) {
+				// Return copies.
+				o := *oldMem
+				o.Tags = append([]string{}, oldMem.Tags...)
+				f := *freshMem
+				f.Tags = append([]string{}, freshMem.Tags...)
+				return []*model.Memory{&o, &f}, nil
+			},
+			updateFn: func(m *model.Memory) error {
+				updatedIDs = append(updatedIDs, m.ID)
+				return nil
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	if err := cmdErode([]string{}, &buf); err != nil {
+		t.Fatalf("erode: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if result["processed"].(float64) != 2 {
+		t.Errorf("processed = %v, want 2", result["processed"])
+	}
+	// old-mem should transition; fresh-mem should not change.
+	if result["updated"].(float64) < 1 {
+		t.Errorf("updated = %v, want >= 1", result["updated"])
+	}
+
+	transitions := result["transitions"]
+	if transitions == nil {
+		t.Fatal("expected transitions array")
+	}
+	ts := transitions.([]any)
+	if len(ts) == 0 {
+		t.Fatal("expected at least one transition")
+	}
+	first := ts[0].(map[string]any)
+	if first["id"] != "old-mem" {
+		t.Errorf("transition id = %v, want old-mem", first["id"])
+	}
+	if first["new_state"] != "archived" {
+		t.Errorf("new_state = %v, want archived", first["new_state"])
+	}
+}
+
+func TestCmdErodeListError(t *testing.T) {
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			listAllFn: func() ([]*model.Memory, error) {
+				return nil, fmt.Errorf("db gone")
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdErode([]string{}, &buf)
+	if err == nil {
+		t.Fatal("expected list error")
+	}
+	if !strings.Contains(err.Error(), "erode list") {
+		t.Errorf("error = %q, want 'erode list'", err)
+	}
+}
+
+func TestCmdErodeUpdateError(t *testing.T) {
+	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	restoreTime := setTimeNow(fixedTime)
+	defer restoreTime()
+
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			listAllFn: func() ([]*model.Memory, error) {
+				return []*model.Memory{
+					{
+						ID: "fail", Confidence: 0.5, State: model.StateActive,
+						LastAccessedAt: fixedTime.Add(-100 * time.Hour), Tags: []string{},
+					},
+				}, nil
+			},
+			updateFn: func(_ *model.Memory) error {
+				return fmt.Errorf("write failed")
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdErode([]string{}, &buf)
+	if err == nil {
+		t.Fatal("expected update error")
+	}
+	if !strings.Contains(err.Error(), "erode update") {
+		t.Errorf("error = %q, want 'erode update'", err)
+	}
+}
+
+func TestCmdErodeInvalidDB(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	err := run([]string{"erode", "--db", "/nonexistent/path/test.db"}, &buf)
+	if err == nil {
+		t.Fatal("expected error for invalid db path")
+	}
+	if !strings.Contains(err.Error(), "open database") {
+		t.Errorf("error = %q, want 'open database'", err)
+	}
+}
+
+func TestCmdErodeDormantTransition(t *testing.T) {
+	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	restoreTime := setTimeNow(fixedTime)
+	defer restoreTime()
+
+	// Memory with confidence 0.5 accessed 50 hours ago:
+	// 0.5 * e^(-0.01*50) = 0.5 * e^(-0.5) ≈ 0.303 -> dormant (between 0.1 and 0.4)
+	mem := &model.Memory{
+		ID:             "mid-mem",
+		Content:        "aging fact",
+		Confidence:     0.5,
+		State:          model.StateActive,
+		LastAccessedAt: fixedTime.Add(-50 * time.Hour),
+		UpdatedAt:      fixedTime.Add(-50 * time.Hour),
+		Tags:           []string{},
+	}
+
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			listAllFn: func() ([]*model.Memory, error) {
+				cp := *mem
+				return []*model.Memory{&cp}, nil
+			},
+			updateFn: func(_ *model.Memory) error { return nil },
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	if err := cmdErode([]string{}, &buf); err != nil {
+		t.Fatalf("erode: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ts := result["transitions"].([]any)
+	if len(ts) != 1 {
+		t.Fatalf("transitions = %d, want 1", len(ts))
+	}
+	first := ts[0].(map[string]any)
+	if first["new_state"] != "dormant" {
+		t.Errorf("new_state = %v, want dormant", first["new_state"])
+	}
+}
+

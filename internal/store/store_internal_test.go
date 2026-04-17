@@ -49,17 +49,32 @@ func TestScanMemoryUnmarshalTagsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unmarshal error")
 	}
+	if !strings.Contains(err.Error(), "unmarshal tags") {
+		t.Errorf("error = %q, want it to mention 'unmarshal tags'", err)
+	}
 }
 
 func TestScanMemoryScanError(t *testing.T) {
 	t.Parallel()
 	db := testDB(t)
 
-	// Query a row that doesn't have the right number of columns.
-	row := db.QueryRow(`SELECT id FROM memories WHERE id = 'nonexistent'`)
-	_, err := scanMemory(row)
+	// Wrong column count triggers a scan error on an existing row.
+	now := time.Now().Format(time.RFC3339Nano)
+	_, err := db.Exec(
+		`INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"id-scan", "content", 0.9, "active", 0, now, now, now, "[]", "",
+	)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	row := db.QueryRow(`SELECT id FROM memories WHERE id = 'id-scan'`)
+	_, err = scanMemory(row)
 	if err == nil {
-		t.Fatal("expected scan error or not found")
+		t.Fatal("expected scan error")
+	}
+	if !strings.Contains(err.Error(), "scan memory") {
+		t.Errorf("error = %q, want it to mention 'scan memory'", err)
 	}
 }
 
@@ -85,6 +100,9 @@ func TestCollectMemoriesScanError(t *testing.T) {
 	_, err = collectMemories(rows)
 	if err == nil {
 		t.Fatal("expected error from collectMemories with bad tags")
+	}
+	if !strings.Contains(err.Error(), "unmarshal tags") {
+		t.Errorf("error = %q, want it to mention 'unmarshal tags'", err)
 	}
 }
 
@@ -175,5 +193,190 @@ func TestOpenSqlOpenError(t *testing.T) {
 	_, err := Open("/tmp/test.db")
 	if err == nil {
 		t.Fatal("expected error from sql.Open")
+	}
+	if !strings.Contains(err.Error(), "open database") {
+		t.Errorf("error = %q, want it to mention 'open database'", err)
+	}
+}
+
+func TestRunInTxCommit(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	d, err := Open(filepath.Join(dir, "tx.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer d.Close()
+	if err := d.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	now := time.Now()
+	m := &model.Memory{
+		ID: "tx-1", Content: "transactional", Confidence: 1.0,
+		State: model.StateActive, CreatedAt: now, UpdatedAt: now,
+		LastAccessedAt: now, Tags: []string{}, Source: "",
+	}
+
+	err = d.RunInTx(func() error {
+		return d.Insert(m)
+	})
+	if err != nil {
+		t.Fatalf("RunInTx: %v", err)
+	}
+
+	got, err := d.Get("tx-1")
+	if err != nil {
+		t.Fatalf("get after commit: %v", err)
+	}
+	if got.Content != "transactional" {
+		t.Errorf("content = %q, want transactional", got.Content)
+	}
+}
+
+func TestRunInTxRollback(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	d, err := Open(filepath.Join(dir, "tx.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer d.Close()
+	if err := d.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	now := time.Now()
+	m := &model.Memory{
+		ID: "tx-rollback", Content: "should not persist", Confidence: 1.0,
+		State: model.StateActive, CreatedAt: now, UpdatedAt: now,
+		LastAccessedAt: now, Tags: []string{}, Source: "",
+	}
+
+	err = d.RunInTx(func() error {
+		if err := d.Insert(m); err != nil {
+			return err
+		}
+		return fmt.Errorf("forced rollback")
+	})
+	if err == nil {
+		t.Fatal("expected error from RunInTx")
+	}
+	if !strings.Contains(err.Error(), "forced rollback") {
+		t.Errorf("error = %q, want 'forced rollback'", err)
+	}
+
+	// Memory should not exist after rollback.
+	_, err = d.Get("tx-rollback")
+	if err != ErrNotFound {
+		t.Errorf("expected ErrNotFound after rollback, got %v", err)
+	}
+}
+
+func TestRunInTxOnClosedDB(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	d, err := Open(filepath.Join(dir, "tx-closed.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	d.Close()
+
+	err = d.RunInTx(func() error { return nil })
+	if err == nil {
+		t.Fatal("expected error on closed db")
+	}
+	if !strings.Contains(err.Error(), "begin transaction") {
+		t.Errorf("error = %q, want 'begin transaction'", err)
+	}
+}
+
+// TestRunInTxCommitError must not be parallel: it replaces the global beginTx.
+func TestRunInTxCommitError(t *testing.T) {
+	dir := t.TempDir()
+	d, err := Open(filepath.Join(dir, "tx-commit-err.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer d.Close()
+	if err := d.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	// Rollback the tx before RunInTx tries to commit, making Commit fail.
+	old := beginTx
+	var sneakyTx *sql.Tx
+	beginTx = func(conn *sql.DB) (*sql.Tx, error) {
+		tx, err := conn.Begin()
+		sneakyTx = tx
+		return tx, err
+	}
+	t.Cleanup(func() { beginTx = old })
+
+	err = d.RunInTx(func() error {
+		// Rollback behind RunInTx's back so Commit will fail.
+		sneakyTx.Rollback()
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected commit error")
+	}
+	if !strings.Contains(err.Error(), "commit transaction") {
+		t.Errorf("error = %q, want 'commit transaction'", err)
+	}
+}
+
+func TestRunInTxMultipleOps(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	d, err := Open(filepath.Join(dir, "tx-multi.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer d.Close()
+	if err := d.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	now := time.Now()
+	m1 := &model.Memory{
+		ID: "tx-m1", Content: "first", Confidence: 1.0,
+		State: model.StateActive, CreatedAt: now, UpdatedAt: now,
+		LastAccessedAt: now, Tags: []string{}, Source: "",
+	}
+	// Pre-insert m1 so we can delete it inside the transaction.
+	if err := d.Insert(m1); err != nil {
+		t.Fatalf("pre-insert: %v", err)
+	}
+
+	m2 := &model.Memory{
+		ID: "tx-m2", Content: "second", Confidence: 0.8,
+		State: model.StateActive, CreatedAt: now, UpdatedAt: now,
+		LastAccessedAt: now, Tags: []string{}, Source: "",
+	}
+
+	// Transaction: insert m2, then delete m1.
+	err = d.RunInTx(func() error {
+		if err := d.Insert(m2); err != nil {
+			return err
+		}
+		return d.Delete("tx-m1")
+	})
+	if err != nil {
+		t.Fatalf("RunInTx: %v", err)
+	}
+
+	// m2 should exist.
+	got, err := d.Get("tx-m2")
+	if err != nil {
+		t.Fatalf("get m2: %v", err)
+	}
+	if got.Content != "second" {
+		t.Errorf("m2 content = %q, want second", got.Content)
+	}
+	// m1 should be gone.
+	_, err = d.Get("tx-m1")
+	if err != ErrNotFound {
+		t.Errorf("expected ErrNotFound for m1, got %v", err)
 	}
 }

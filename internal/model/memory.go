@@ -43,6 +43,13 @@ type Memory struct {
 	Source string `json:"source,omitempty"`
 }
 
+// ValidStates is the set of recognised lifecycle states.
+var ValidStates = map[State]bool{
+	StateActive:   true,
+	StateDormant:  true,
+	StateArchived: true,
+}
+
 // IsRetrievable reports whether the memory can be surfaced to a query.
 func (m *Memory) IsRetrievable() bool {
 	return m.State == StateActive || m.State == StateDormant

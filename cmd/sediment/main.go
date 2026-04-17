@@ -7,7 +7,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/jacobjnilsson/sediment/internal/model"
 	"github.com/jacobjnilsson/sediment/internal/store"
 )
@@ -18,7 +21,12 @@ const defaultDBFile = ".sediment.db"
 type storeI interface {
 	Migrate() error
 	ListAll() ([]*model.Memory, error)
+	ListByState(state model.State) ([]*model.Memory, error)
+	Get(id string) (*model.Memory, error)
 	Insert(m *model.Memory) error
+	Update(m *model.Memory) error
+	Delete(id string) error
+	RunInTx(fn func() error) error
 	Close() error
 }
 
@@ -30,6 +38,14 @@ var openFunc = func(path string) (storeI, error) {
 // absFunc wraps filepath.Abs. Overridable for tests.
 var absFunc = filepath.Abs
 
+// newUUID generates a new UUID string. Overridable for tests.
+var newUUID = func() string {
+	return uuid.New().String()
+}
+
+// timeNow returns the current time. Overridable for tests.
+var timeNow = time.Now
+
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -39,7 +55,7 @@ func main() {
 
 func run(args []string, w io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: sediment <command> [args]\n\nCommands:\n  init    Initialise a new sediment database\n  status  Show database status")
+		return fmt.Errorf("usage: sediment <command> [args]\n\nCommands:\n  init     Initialise a new sediment database\n  status   Show database status\n  deposit  Store a new memory\n  strata   List memory layers")
 	}
 
 	switch args[0] {
@@ -47,27 +63,42 @@ func run(args []string, w io.Writer) error {
 		return cmdInit(args[1:], w)
 	case "status":
 		return cmdStatus(args[1:], w)
+	case "deposit":
+		return cmdDeposit(args[1:], w)
+	case "strata":
+		return cmdStrata(args[1:], w)
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
 }
 
-func dbPath(args []string) string {
+func flagValue(args []string, name string) string {
 	for i, a := range args {
-		if a == "--db" && i+1 < len(args) {
+		if a == name && i+1 < len(args) {
 			return args[i+1]
 		}
 	}
-	return defaultDBFile
+	return ""
 }
 
-func writeJSON(w io.Writer, v any) {
-	out, _ := json.Marshal(v)
-	fmt.Fprintln(w, string(out))
+func flagValueDefault(args []string, name, fallback string) string {
+	if v := flagValue(args, name); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func writeJSON(w io.Writer, v any) error {
+	out, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("json marshal: %w", err)
+	}
+	_, err = fmt.Fprintln(w, string(out))
+	return err
 }
 
 func openAndMigrate(args []string) (db storeI, absPath string, err error) {
-	absPath, err = absFunc(dbPath(args))
+	absPath, err = absFunc(flagValueDefault(args, "--db", defaultDBFile))
 	if err != nil {
 		return nil, "", fmt.Errorf("resolve path: %w", err)
 	}
@@ -89,11 +120,10 @@ func cmdInit(args []string, w io.Writer) error {
 	}
 	defer db.Close()
 
-	writeJSON(w, map[string]string{
+	return writeJSON(w, map[string]string{
 		"status": "ok",
 		"path":   absPath,
 	})
-	return nil
 }
 
 func cmdStatus(args []string, w io.Writer) error {
@@ -111,21 +141,91 @@ func cmdStatus(args []string, w io.Writer) error {
 	active, dormant, archived := 0, 0, 0
 	for _, m := range all {
 		switch m.State {
-		case "active":
+		case model.StateActive:
 			active++
-		case "dormant":
+		case model.StateDormant:
 			dormant++
-		case "archived":
+		case model.StateArchived:
 			archived++
 		}
 	}
 
-	writeJSON(w, map[string]any{
+	return writeJSON(w, map[string]any{
 		"total":    len(all),
 		"active":   active,
 		"dormant":  dormant,
 		"archived": archived,
 		"path":     absPath,
 	})
-	return nil
+}
+
+func cmdDeposit(args []string, w io.Writer) error {
+	content := flagValue(args, "--content")
+	if content == "" {
+		return fmt.Errorf("--content is required")
+	}
+
+	source := flagValue(args, "--source")
+
+	var tags []string
+	if raw := flagValue(args, "--tags"); raw != "" {
+		for _, t := range strings.Split(raw, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				tags = append(tags, t)
+			}
+		}
+	}
+
+	db, _, err := openAndMigrate(args)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	now := timeNow()
+	m := &model.Memory{
+		ID:             newUUID(),
+		Content:        content,
+		Confidence:     1.0,
+		State:          model.StateActive,
+		AccessCount:    0,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		LastAccessedAt: now,
+		Tags:           tags,
+		Source:         source,
+	}
+
+	if err := db.Insert(m); err != nil {
+		return fmt.Errorf("deposit: %w", err)
+	}
+
+	return writeJSON(w, m)
+}
+
+func cmdStrata(args []string, w io.Writer) error {
+	db, _, err := openAndMigrate(args)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	stateFilter := flagValue(args, "--state")
+
+	var memories []*model.Memory
+	if stateFilter != "" {
+		s := model.State(stateFilter)
+		if !model.ValidStates[s] {
+			return fmt.Errorf("unknown state: %s (valid: active, dormant, archived)", stateFilter)
+		}
+		memories, err = db.ListByState(s)
+	} else {
+		memories, err = db.ListAll()
+	}
+	if err != nil {
+		return fmt.Errorf("strata: %w", err)
+	}
+
+	return writeJSON(w, memories)
 }

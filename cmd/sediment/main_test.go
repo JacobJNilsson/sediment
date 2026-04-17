@@ -1346,3 +1346,397 @@ func TestCmdCompactInvalidDB(t *testing.T) {
 	}
 }
 
+// --- resolve tests ---
+
+func TestCmdResolveUpdate(t *testing.T) {
+	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	restoreTime := setTimeNow(fixedTime)
+	defer restoreTime()
+
+	var updatedMem *model.Memory
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			getFn: func(id string) (*model.Memory, error) {
+				return &model.Memory{
+					ID: "mem-1", Content: "old fact", Confidence: 0.8,
+					State: model.StateActive, Tags: []string{"info"},
+				}, nil
+			},
+			updateFn: func(m *model.Memory) error {
+				updatedMem = m
+				return nil
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdResolve([]string{"--action", "update", "--id", "mem-1", "--content", "corrected fact"}, &buf)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if result["action"] != "update" {
+		t.Errorf("action = %v, want update", result["action"])
+	}
+	if result["old_content"] != "old fact" {
+		t.Errorf("old_content = %v", result["old_content"])
+	}
+	if result["new_content"] != "corrected fact" {
+		t.Errorf("new_content = %v", result["new_content"])
+	}
+	if updatedMem == nil {
+		t.Fatal("expected update to be called")
+	}
+	if updatedMem.Content != "corrected fact" {
+		t.Errorf("updated content = %q", updatedMem.Content)
+	}
+}
+
+func TestCmdResolveSupersede(t *testing.T) {
+	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	restoreTime := setTimeNow(fixedTime)
+	defer restoreTime()
+	restoreUUID := setUUID("new-uuid")
+	defer restoreUUID()
+
+	var updatedMem *model.Memory
+	var insertedMem *model.Memory
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			getFn: func(id string) (*model.Memory, error) {
+				return &model.Memory{
+					ID: "old-1", Content: "outdated info",
+					State: model.StateActive, Tags: []string{"fact"},
+				}, nil
+			},
+			updateFn: func(m *model.Memory) error {
+				updatedMem = m
+				return nil
+			},
+			insertFn: func(m *model.Memory) error {
+				insertedMem = m
+				return nil
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdResolve([]string{"--action", "supersede", "--id", "old-1", "--content", "new truth"}, &buf)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	if updatedMem == nil {
+		t.Fatal("expected old memory to be updated")
+	}
+	if updatedMem.State != model.StateArchived {
+		t.Errorf("old state = %v, want archived", updatedMem.State)
+	}
+	if insertedMem == nil {
+		t.Fatal("expected new memory to be inserted")
+	}
+	if insertedMem.Content != "new truth" {
+		t.Errorf("new content = %q", insertedMem.Content)
+	}
+	if !strings.Contains(insertedMem.Source, "supersede:") {
+		t.Errorf("source = %q, want supersede: prefix", insertedMem.Source)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if result["action"] != "supersede" {
+		t.Errorf("action = %v, want supersede", result["action"])
+	}
+}
+
+func TestCmdResolveKeep(t *testing.T) {
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			getFn: func(id string) (*model.Memory, error) {
+				return &model.Memory{
+					ID: "keep-1", Content: "still valid", Tags: []string{},
+				}, nil
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdResolve([]string{"--action", "keep", "--id", "keep-1"}, &buf)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if result["action"] != "keep" {
+		t.Errorf("action = %v, want keep", result["action"])
+	}
+	if result["id"] != "keep-1" {
+		t.Errorf("id = %v, want keep-1", result["id"])
+	}
+}
+
+func TestCmdResolveMissingAction(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	err := run([]string{"resolve", "--id", "x"}, &buf)
+	if err == nil {
+		t.Fatal("expected error for missing --action")
+	}
+	if !strings.Contains(err.Error(), "--action is required") {
+		t.Errorf("error = %q", err)
+	}
+}
+
+func TestCmdResolveMissingID(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	err := run([]string{"resolve", "--action", "keep"}, &buf)
+	if err == nil {
+		t.Fatal("expected error for missing --id")
+	}
+	if !strings.Contains(err.Error(), "--id is required") {
+		t.Errorf("error = %q", err)
+	}
+}
+
+func TestCmdResolveUnknownAction(t *testing.T) {
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			getFn: func(_ string) (*model.Memory, error) {
+				return &model.Memory{ID: "x", Tags: []string{}}, nil
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdResolve([]string{"--action", "bogus", "--id", "x"}, &buf)
+	if err == nil {
+		t.Fatal("expected error for unknown action")
+	}
+	if !strings.Contains(err.Error(), "unknown action: bogus") {
+		t.Errorf("error = %q", err)
+	}
+}
+
+func TestCmdResolveGetError(t *testing.T) {
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			getFn: func(_ string) (*model.Memory, error) {
+				return nil, store.ErrNotFound
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdResolve([]string{"--action", "keep", "--id", "missing"}, &buf)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "resolve get") {
+		t.Errorf("error = %q, want 'resolve get'", err)
+	}
+}
+
+func TestCmdResolveUpdateError(t *testing.T) {
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			getFn: func(_ string) (*model.Memory, error) {
+				return &model.Memory{ID: "x", Tags: []string{}}, nil
+			},
+			updateFn: func(_ *model.Memory) error {
+				return fmt.Errorf("write failed")
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdResolve([]string{"--action", "update", "--id", "x", "--content", "new"}, &buf)
+	if err == nil {
+		t.Fatal("expected update error")
+	}
+	if !strings.Contains(err.Error(), "resolve update") {
+		t.Errorf("error = %q, want 'resolve update'", err)
+	}
+}
+
+func TestCmdResolveUpdateMissingContent(t *testing.T) {
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			getFn: func(_ string) (*model.Memory, error) {
+				return &model.Memory{ID: "x", Tags: []string{}}, nil
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdResolve([]string{"--action", "update", "--id", "x"}, &buf)
+	if err == nil {
+		t.Fatal("expected error for missing content")
+	}
+	if !strings.Contains(err.Error(), "--content is required") {
+		t.Errorf("error = %q", err)
+	}
+}
+
+func TestCmdResolveSupersedeArchiveError(t *testing.T) {
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			getFn: func(_ string) (*model.Memory, error) {
+				return &model.Memory{ID: "x", Tags: []string{}}, nil
+			},
+			updateFn: func(_ *model.Memory) error {
+				return fmt.Errorf("archive failed")
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdResolve([]string{"--action", "supersede", "--id", "x", "--content", "new"}, &buf)
+	if err == nil {
+		t.Fatal("expected archive error")
+	}
+	if !strings.Contains(err.Error(), "resolve archive") {
+		t.Errorf("error = %q, want 'resolve archive'", err)
+	}
+}
+
+func TestCmdResolveSupersedeInsertError(t *testing.T) {
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			getFn: func(_ string) (*model.Memory, error) {
+				return &model.Memory{ID: "x", Tags: []string{}}, nil
+			},
+			updateFn: func(_ *model.Memory) error { return nil },
+			insertFn: func(_ *model.Memory) error {
+				return fmt.Errorf("insert failed")
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdResolve([]string{"--action", "supersede", "--id", "x", "--content", "new"}, &buf)
+	if err == nil {
+		t.Fatal("expected insert error")
+	}
+	if !strings.Contains(err.Error(), "resolve insert") {
+		t.Errorf("error = %q, want 'resolve insert'", err)
+	}
+}
+
+func TestCmdResolveSupersedemissingContent(t *testing.T) {
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			getFn: func(_ string) (*model.Memory, error) {
+				return &model.Memory{ID: "x", Tags: []string{}}, nil
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdResolve([]string{"--action", "supersede", "--id", "x"}, &buf)
+	if err == nil {
+		t.Fatal("expected error for missing content")
+	}
+	if !strings.Contains(err.Error(), "--content is required") {
+		t.Errorf("error = %q", err)
+	}
+}
+
+// errWriter is an io.Writer that always returns an error.
+type errWriter struct{}
+
+func (errWriter) Write([]byte) (int, error) {
+	return 0, fmt.Errorf("write failed")
+}
+
+func TestCmdResolveUpdateWriteError(t *testing.T) {
+	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	restoreTime := setTimeNow(fixedTime)
+	defer restoreTime()
+
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			getFn: func(_ string) (*model.Memory, error) {
+				return &model.Memory{ID: "u1", Content: "old", Tags: []string{}}, nil
+			},
+			updateFn: func(_ *model.Memory) error { return nil },
+		}, nil
+	})
+	defer restore()
+
+	err := cmdResolve([]string{"--action", "update", "--id", "u1", "--content", "new", "--db", "test.db"}, errWriter{})
+	if err == nil {
+		t.Fatal("expected write error")
+	}
+}
+
+func TestCmdResolveSupersedeWriteError(t *testing.T) {
+	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	restoreTime := setTimeNow(fixedTime)
+	defer restoreTime()
+	restoreUUID := setUUID("new-uuid")
+	defer restoreUUID()
+
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			getFn: func(_ string) (*model.Memory, error) {
+				return &model.Memory{ID: "s1", Content: "old", Tags: []string{}}, nil
+			},
+			updateFn: func(_ *model.Memory) error { return nil },
+			insertFn: func(_ *model.Memory) error { return nil },
+		}, nil
+	})
+	defer restore()
+
+	err := cmdResolve([]string{"--action", "supersede", "--id", "s1", "--content", "new", "--db", "test.db"}, errWriter{})
+	if err == nil {
+		t.Fatal("expected write error")
+	}
+}
+
+func TestCmdResolveKeepWriteError(t *testing.T) {
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			getFn: func(_ string) (*model.Memory, error) {
+				return &model.Memory{ID: "k1", Content: "still valid", Tags: []string{}}, nil
+			},
+		}, nil
+	})
+	defer restore()
+
+	err := cmdResolve([]string{"--action", "keep", "--id", "k1", "--db", "test.db"}, errWriter{})
+	if err == nil {
+		t.Fatal("expected write error")
+	}
+}
+
+func TestCmdResolveInvalidDB(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	err := run([]string{"resolve", "--action", "keep", "--id", "x", "--db", "/nonexistent/path/test.db"}, &buf)
+	if err == nil {
+		t.Fatal("expected error for invalid db path")
+	}
+	if !strings.Contains(err.Error(), "open database") {
+		t.Errorf("error = %q, want 'open database'", err)
+	}
+}

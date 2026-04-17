@@ -696,3 +696,150 @@ func TestWriteJSON_MarshalError(t *testing.T) {
 	}
 }
 
+// --- excavate tests ---
+
+func TestCmdExcavate(t *testing.T) {
+	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	restoreTime := setTimeNow(fixedTime)
+	defer restoreTime()
+
+	mem := &model.Memory{
+		ID:             "mem-1",
+		Content:        "dark mode preference",
+		Confidence:     0.8,
+		State:          model.StateActive,
+		AccessCount:    2,
+		CreatedAt:      fixedTime.Add(-48 * time.Hour),
+		UpdatedAt:      fixedTime.Add(-24 * time.Hour),
+		LastAccessedAt: fixedTime.Add(-24 * time.Hour),
+		Tags:           []string{"pref"},
+		Source:         "chat",
+	}
+
+	var updated *model.Memory
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			getFn: func(id string) (*model.Memory, error) {
+				if id != "mem-1" {
+					return nil, store.ErrNotFound
+				}
+				// Return a copy so the original isn't mutated.
+				cp := *mem
+				cp.Tags = make([]string, len(mem.Tags))
+				copy(cp.Tags, mem.Tags)
+				return &cp, nil
+			},
+			updateFn: func(m *model.Memory) error {
+				updated = m
+				return nil
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdExcavate([]string{"--id", "mem-1"}, &buf)
+	if err != nil {
+		t.Fatalf("excavate: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	// Should have the expected keys.
+	for _, key := range []string{"memory", "decayed_confidence", "boosted_confidence", "state"} {
+		if _, ok := result[key]; !ok {
+			t.Errorf("missing key %q in output", key)
+		}
+	}
+
+	// AccessCount should have incremented.
+	if updated == nil {
+		t.Fatal("expected update to be called")
+	}
+	if updated.AccessCount != 3 {
+		t.Errorf("AccessCount = %d, want 3", updated.AccessCount)
+	}
+	// Confidence should be boosted above decayed value.
+	if result["boosted_confidence"].(float64) <= result["decayed_confidence"].(float64) {
+		t.Errorf("boosted (%v) should be > decayed (%v)",
+			result["boosted_confidence"], result["decayed_confidence"])
+	}
+}
+
+func TestCmdExcavateMissingID(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	err := run([]string{"excavate"}, &buf)
+	if err == nil {
+		t.Fatal("expected error for missing --id")
+	}
+	if !strings.Contains(err.Error(), "--id is required") {
+		t.Errorf("error = %q, want '--id is required'", err)
+	}
+}
+
+func TestCmdExcavateNotFound(t *testing.T) {
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			getFn: func(_ string) (*model.Memory, error) {
+				return nil, store.ErrNotFound
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdExcavate([]string{"--id", "missing"}, &buf)
+	if err == nil {
+		t.Fatal("expected error for missing memory")
+	}
+	if !strings.Contains(err.Error(), "excavate") {
+		t.Errorf("error = %q, want 'excavate'", err)
+	}
+}
+
+func TestCmdExcavateUpdateError(t *testing.T) {
+	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	restoreTime := setTimeNow(fixedTime)
+	defer restoreTime()
+
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			getFn: func(_ string) (*model.Memory, error) {
+				return &model.Memory{
+					ID: "x", Confidence: 0.5, State: model.StateActive,
+					LastAccessedAt: fixedTime, Tags: []string{},
+				}, nil
+			},
+			updateFn: func(_ *model.Memory) error {
+				return fmt.Errorf("write failed")
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdExcavate([]string{"--id", "x"}, &buf)
+	if err == nil {
+		t.Fatal("expected update error")
+	}
+	if !strings.Contains(err.Error(), "excavate update") {
+		t.Errorf("error = %q, want 'excavate update'", err)
+	}
+}
+
+func TestCmdExcavateInvalidDB(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	err := run([]string{"excavate", "--id", "x", "--db", "/nonexistent/path/test.db"}, &buf)
+	if err == nil {
+		t.Fatal("expected error for invalid db path")
+	}
+	if !strings.Contains(err.Error(), "open database") {
+		t.Errorf("error = %q, want 'open database'", err)
+	}
+}
+

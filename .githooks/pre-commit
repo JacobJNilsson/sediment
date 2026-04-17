@@ -1,0 +1,29 @@
+#!/bin/sh
+# Pre-commit hook: enforce formatting, linting, and 100% test coverage.
+set -e
+
+echo "==> gofmt"
+UNFMT=$(gofmt -l .)
+if [ -n "$UNFMT" ]; then
+    echo "FAIL: files not formatted:"
+    echo "$UNFMT"
+    exit 1
+fi
+
+echo "==> go vet"
+go vet ./...
+
+echo "==> tests + coverage"
+go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+UNCOVERED=$(go tool cover -func=coverage.out | grep -v '100.0%' | grep -v '^total:' | grep -v '\.go:[0-9]*:	main	')
+if [ -n "$UNCOVERED" ]; then
+    echo ""
+    echo "FAIL: functions not at 100% coverage:"
+    echo "$UNCOVERED"
+    rm -f coverage.out
+    exit 1
+fi
+
+rm -f coverage.out
+echo "==> All checks passed"

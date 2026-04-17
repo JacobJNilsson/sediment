@@ -22,5 +22,8 @@ Thumbs.db
 
 # Build
 dist/
-coverage.out
-cov.out
+
+# Agent memory (repo-local, not source)
+.sediment.db
+.sediment.db-wal
+.sediment.db-shm

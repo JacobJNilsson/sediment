@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jacobjnilsson/sediment/internal/decay"
 	"github.com/jacobjnilsson/sediment/internal/model"
 	"github.com/jacobjnilsson/sediment/internal/store"
 )
@@ -55,7 +56,7 @@ func main() {
 
 func run(args []string, w io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: sediment <command> [args]\n\nCommands:\n  init     Initialise a new sediment database\n  status   Show database status\n  deposit  Store a new memory\n  strata   List memory layers")
+		return fmt.Errorf("usage: sediment <command> [args]\n\nCommands:\n  init      Initialise a new sediment database\n  status    Show database status\n  deposit   Store a new memory\n  strata    List memory layers\n  excavate  Retrieve a memory by ID (reinforces confidence)")
 	}
 
 	switch args[0] {
@@ -67,6 +68,8 @@ func run(args []string, w io.Writer) error {
 		return cmdDeposit(args[1:], w)
 	case "strata":
 		return cmdStrata(args[1:], w)
+	case "excavate":
+		return cmdExcavate(args[1:], w)
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
@@ -228,4 +231,43 @@ func cmdStrata(args []string, w io.Writer) error {
 	}
 
 	return writeJSON(w, memories)
+}
+
+func cmdExcavate(args []string, w io.Writer) error {
+	id := flagValue(args, "--id")
+	if id == "" {
+		return fmt.Errorf("--id is required")
+	}
+
+	db, _, err := openAndMigrate(args)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	m, err := db.Get(id)
+	if err != nil {
+		return fmt.Errorf("excavate: %w", err)
+	}
+
+	cfg := decay.DefaultConfig()
+	now := timeNow()
+
+	// Snapshot the decayed confidence before reinforcement so the caller
+	// can see how much the memory had faded. Reinforce also calls
+	// CurrentConfidence internally, but we need the pre-boost value.
+	decayedConfidence := decay.CurrentConfidence(m, now, cfg.Lambda)
+	decay.Reinforce(m, now, cfg)
+	m.State = decay.Classify(m.Confidence, cfg)
+
+	if err := db.Update(m); err != nil {
+		return fmt.Errorf("excavate update: %w", err)
+	}
+
+	return writeJSON(w, map[string]any{
+		"memory":             m,
+		"decayed_confidence": decayedConfidence,
+		"boosted_confidence": m.Confidence,
+		"state":              string(m.State),
+	})
 }

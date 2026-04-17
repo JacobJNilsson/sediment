@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/huh"
 	"github.com/google/uuid"
 	"github.com/jacobjnilsson/sediment/internal/decay"
 	"github.com/jacobjnilsson/sediment/internal/model"
@@ -19,6 +20,75 @@ import (
 )
 
 const defaultDBFile = ".sediment.db"
+
+const skillContent = `---
+name: sediment
+description: Manage persistent memory across sessions. Use this skill at the start of every session to load context, and whenever you learn something worth remembering about the user, project, or codebase. Also use it when facts contradict what you previously stored.
+---
+
+# Sediment - Persistent Agent Memory
+
+You have access to ` + "`sediment`" + `, a CLI tool for persistent memory across sessions.
+The database defaults to ` + "`.sediment.db`" + ` in the current working directory - one
+per repo. Run ` + "`sediment --help`" + ` for full usage.
+
+## When to use this skill
+
+### Session start (always)
+Load relevant memories to prime your context:
+
+` + "```sh" + `
+sediment strata
+` + "```" + `
+
+If there are many memories, filter by state:
+
+` + "```sh" + `
+sediment strata --state active
+` + "```" + `
+
+Excavate specific memories you plan to use (this reinforces their confidence):
+
+` + "```sh" + `
+sediment excavate --id <uuid>
+` + "```" + `
+
+### During a session
+Deposit new learnings whenever you discover something worth remembering:
+
+- User preferences (coding style, commit conventions, tools they like)
+- Project facts (architecture decisions, file layout, key dependencies)
+- Identity info (names, GitHub handles, workspace paths)
+- Codebase patterns (how tests are structured, naming conventions)
+
+` + "```sh" + `
+sediment deposit --content "..." --tags "..." --source "session-context"
+` + "```" + `
+
+### When facts change
+If you learn something that contradicts an existing memory, resolve it:
+
+` + "```sh" + `
+sediment resolve --action update --id <uuid> --content "corrected fact"
+sediment resolve --action supersede --id <uuid> --content "new truth"
+` + "```" + `
+
+### Periodically
+Run decay to let stale memories fade naturally:
+
+` + "```sh" + `
+sediment erode
+` + "```" + `
+
+## Guidelines
+
+- **Do not deposit trivial or ephemeral facts.** Only store things that would be useful in a future session.
+- **Use meaningful tags.** They help filter and group memories later.
+- **Keep content concise.** One clear statement per memory, not paragraphs.
+- **Run erode occasionally**, not every session. Once a week or when memories accumulate.
+- **Do not dump the full strata output to the user** unless asked. Use it silently to inform your responses.
+- **The .sediment.db file should be gitignored.** It contains local agent context, not project source.
+`
 
 const globalUsage = `sediment - AI memory lifecycle manager
 
@@ -35,6 +105,7 @@ Commands:
   erode     Run decay cycle: fade confidence, transition stale memories
   compact   List compression candidates, or merge memories into one
   resolve   Apply a contradiction resolution (update, supersede, or keep)
+  setup     Interactive setup wizard for your coding assistant
 
 Run 'sediment <command> --help' for command-specific usage.`
 
@@ -120,6 +191,13 @@ Flags:
   --content  New content (required for update and supersede)
 
 Output varies by action — always includes the affected memory objects as JSON`,
+
+	"setup": `Usage: sediment setup
+
+Interactive setup wizard. Asks which AI agent system you use and where
+to install the skill, then creates the database and updates .gitignore.
+
+No flags needed — the wizard guides you through each step.`,
 }
 
 // erodeTransition records a memory that changed lifecycle state during erosion.
@@ -160,6 +238,12 @@ var newUUID = func() string {
 // timeNow returns the current time. Overridable for tests.
 var timeNow = time.Now
 
+// userHomeDir wraps os.UserHomeDir. Overridable for tests.
+var userHomeDir = os.UserHomeDir
+
+// writeFile wraps os.WriteFile. Overridable for tests.
+var writeFile = os.WriteFile
+
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -176,8 +260,15 @@ func isHelp(args []string) bool {
 	return false
 }
 
+// statFile wraps os.Stat for testability.
+var statFile = os.Stat
+
 func run(args []string, w io.Writer) error {
 	if len(args) == 0 {
+		if _, err := statFile(defaultDBFile); os.IsNotExist(err) {
+			fmt.Fprintln(w, "sediment is not set up in this directory.\n\nRun 'sediment setup' to get started.")
+			return nil
+		}
 		fmt.Fprintln(w, globalUsage)
 		return nil
 	}
@@ -212,6 +303,8 @@ func run(args []string, w io.Writer) error {
 		return cmdCompact(rest, w)
 	case "resolve":
 		return cmdResolve(rest, w)
+	case "setup":
+		return cmdSetup(rest, w)
 	default:
 		return fmt.Errorf("unknown command: %s (run 'sediment --help' for usage)", cmd)
 	}
@@ -707,4 +800,109 @@ func cmdResolve(args []string, w io.Writer) error {
 	}
 
 	return nil
+}
+
+// setupConfig holds the answers from the interactive setup form.
+type setupConfig struct {
+	System string
+	Scope  string
+}
+
+// runSetupForm is the function that presents the interactive form.
+// Overridable for tests.
+var runSetupForm = func() (*setupConfig, error) {
+	var system, scope string
+
+	err := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Which AI agent system do you use?").
+				Options(
+					huh.NewOption("OpenCode", "opencode"),
+				).
+				Value(&system),
+
+			huh.NewSelect[string]().
+				Title("Where should the skill be installed?").
+				Options(
+					huh.NewOption("Global (~/.agents/skills/) — available in all repos", "global"),
+					huh.NewOption("Workspace (.agents/skills/) — this project only", "workspace"),
+				).
+				Value(&scope),
+		),
+	).Run()
+	if err != nil {
+		return nil, err
+	}
+	return &setupConfig{System: system, Scope: scope}, nil
+}
+
+func cmdSetup(args []string, w io.Writer) error {
+	cfg, err := runSetupForm()
+	if err != nil {
+		return fmt.Errorf("setup cancelled: %w", err)
+	}
+
+	var skillDir string
+	switch cfg.Scope {
+	case "global":
+		home, err := userHomeDir()
+		if err != nil {
+			return fmt.Errorf("resolve home directory: %w", err)
+		}
+		skillDir = filepath.Join(home, ".agents", "skills", "sediment")
+	case "workspace":
+		skillDir = filepath.Join(".agents", "skills", "sediment")
+	}
+
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		return fmt.Errorf("create skill directory: %w", err)
+	}
+
+	skillPath := filepath.Join(skillDir, "SKILL.md")
+	if err := writeFile(skillPath, []byte(skillContent), 0o644); err != nil {
+		return fmt.Errorf("write skill file: %w", err)
+	}
+
+	absSkillPath, _ := filepath.Abs(skillPath)
+
+	db, absDBPath, err := openAndMigrate(args)
+	if err != nil {
+		return err
+	}
+	db.Close()
+
+	gitignoreUpdated := ensureGitignore()
+
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Setup complete!")
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  Skill:     %s\n", absSkillPath)
+	fmt.Fprintf(w, "  Database:  %s\n", absDBPath)
+	if gitignoreUpdated {
+		fmt.Fprintln(w, "  Gitignore: updated (.sediment.db added)")
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Start a new agent session — it will pick up your memories automatically.")
+
+	return nil
+}
+
+func ensureGitignore() bool {
+	const entry = ".sediment.db"
+	data, err := os.ReadFile(".gitignore")
+	if err != nil {
+		data = []byte{}
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == entry {
+			return false
+		}
+	}
+	addition := "\n# Agent memory (repo-local, not source)\n.sediment.db\n.sediment.db-wal\n.sediment.db-shm\n"
+	if len(data) > 0 && !strings.HasSuffix(string(data), "\n") {
+		addition = "\n" + addition
+	}
+	os.WriteFile(".gitignore", append(data, []byte(addition)...), 0o644)
+	return true
 }

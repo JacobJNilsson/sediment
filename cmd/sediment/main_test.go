@@ -99,15 +99,37 @@ func setTimeNow(t time.Time) func() {
 
 // --- run / routing tests ---
 
-func TestRunNoArgs(t *testing.T) {
-	t.Parallel()
+func TestRunNoArgsWithDB(t *testing.T) {
+	dir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	os.WriteFile(filepath.Join(dir, defaultDBFile), []byte{}, 0o644)
+
 	var buf bytes.Buffer
 	err := run(nil, &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(buf.String(), "sediment") {
-		t.Errorf("output = %q, want global usage", buf.String())
+	if !strings.Contains(buf.String(), "Commands:") {
+		t.Errorf("output = %q, want global usage with Commands", buf.String())
+	}
+}
+
+func TestRunHelpShowsUsageEvenWithNoDB(t *testing.T) {
+	dir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	var buf bytes.Buffer
+	err := run([]string{"--help"}, &buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Commands:") {
+		t.Error("--help should show full usage even without a DB")
 	}
 }
 
@@ -127,7 +149,7 @@ func TestRunHelp(t *testing.T) {
 
 func TestRunCommandHelp(t *testing.T) {
 	t.Parallel()
-	cmds := []string{"init", "status", "deposit", "strata", "excavate", "erode", "compact", "resolve"}
+	cmds := []string{"init", "status", "deposit", "strata", "excavate", "erode", "compact", "resolve", "setup"}
 	for _, cmd := range cmds {
 		var buf bytes.Buffer
 		err := run([]string{cmd, "--help"}, &buf)
@@ -1787,5 +1809,308 @@ func TestCmdResolveInvalidDB(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "open database") {
 		t.Errorf("error = %q, want 'open database'", err)
+	}
+}
+
+// --- setup tests ---
+
+func mockForm(system, scope string) func() {
+	old := runSetupForm
+	runSetupForm = func() (*setupConfig, error) {
+		return &setupConfig{System: system, Scope: scope}, nil
+	}
+	return func() { runSetupForm = old }
+}
+
+func mockFormErr(err error) func() {
+	old := runSetupForm
+	runSetupForm = func() (*setupConfig, error) {
+		return nil, err
+	}
+	return func() { runSetupForm = old }
+}
+
+func TestCmdSetupCancelled(t *testing.T) {
+	restore := mockFormErr(fmt.Errorf("user cancelled"))
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err == nil {
+		t.Fatal("expected error for cancelled setup")
+	}
+	if !strings.Contains(err.Error(), "setup cancelled") {
+		t.Errorf("error = %q, want 'setup cancelled'", err)
+	}
+}
+
+func TestRunSetupViaRun(t *testing.T) {
+	restore := mockFormErr(fmt.Errorf("cancelled"))
+	defer restore()
+
+	var buf bytes.Buffer
+	err := run([]string{"setup"}, &buf)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "setup cancelled") {
+		t.Errorf("error = %q, want 'setup cancelled'", err)
+	}
+}
+
+func TestCmdSetupGlobalScope(t *testing.T) {
+	dir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.exe\n"), 0o644)
+
+	restore := mockForm("opencode", "global")
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Setup complete!") {
+		t.Errorf("output missing 'Setup complete!', got: %s", output)
+	}
+
+	skillPath := filepath.Join(dir, ".agents", "skills", "sediment", "SKILL.md")
+	data, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read skill: %v", err)
+	}
+	if !strings.Contains(string(data), "sediment") {
+		t.Error("skill file missing expected content")
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, ".sediment.db")); os.IsNotExist(err) {
+		t.Error("database was not created")
+	}
+
+	gi, _ := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	if !strings.Contains(string(gi), ".sediment.db") {
+		t.Error("gitignore not updated")
+	}
+}
+
+func TestCmdSetupWorkspaceScope(t *testing.T) {
+	dir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.exe\n"), 0o644)
+
+	restore := mockForm("opencode", "workspace")
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	skillPath := filepath.Join(dir, ".agents", "skills", "sediment", "SKILL.md")
+	if _, err := os.Stat(skillPath); os.IsNotExist(err) {
+		t.Fatal("workspace skill file not created")
+	}
+}
+
+func TestCmdSetupGitignoreAlreadyPresent(t *testing.T) {
+	dir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".sediment.db\n"), 0o644)
+
+	restore := mockForm("opencode", "global")
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	output := buf.String()
+	if strings.Contains(output, "Gitignore: updated") {
+		t.Error("should not report gitignore updated when already present")
+	}
+}
+
+func TestCmdSetupNoGitignore(t *testing.T) {
+	dir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	restore := mockForm("opencode", "global")
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	gi, _ := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	if !strings.Contains(string(gi), ".sediment.db") {
+		t.Error("gitignore not created with sediment entry")
+	}
+
+	if !strings.Contains(buf.String(), "Gitignore: updated") {
+		t.Error("should report gitignore updated")
+	}
+}
+
+func TestCmdSetupInvalidDB(t *testing.T) {
+	restore := mockForm("opencode", "workspace")
+	defer restore()
+
+	dir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	var buf bytes.Buffer
+	err := cmdSetup([]string{"--db", "/nonexistent/path/test.db"}, &buf)
+	if err == nil {
+		t.Fatal("expected error for invalid db path")
+	}
+	if !strings.Contains(err.Error(), "open database") {
+		t.Errorf("error = %q, want 'open database'", err)
+	}
+}
+
+func TestCmdSetupGitignoreNoTrailingNewline(t *testing.T) {
+	dir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.exe"), 0o644)
+
+	restore := mockForm("opencode", "global")
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	gi, _ := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	content := string(gi)
+	if !strings.Contains(content, ".sediment.db") {
+		t.Error("gitignore not updated")
+	}
+	if strings.Contains(content, "*.exe# Agent") {
+		t.Error("missing newline before sediment section")
+	}
+}
+
+func TestCmdSetupSkillDirPermissionDenied(t *testing.T) {
+	dir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	os.MkdirAll(filepath.Join(dir, ".agents", "skills"), 0o755)
+	os.WriteFile(filepath.Join(dir, ".agents", "skills", "sediment"), []byte("blocker"), 0o644)
+
+	restore := mockForm("opencode", "workspace")
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err == nil {
+		t.Fatal("expected error for blocked skill directory")
+	}
+	if !strings.Contains(err.Error(), "create skill directory") {
+		t.Errorf("error = %q, want 'create skill directory'", err)
+	}
+}
+
+func TestCmdSetupWriteSkillError(t *testing.T) {
+	dir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	restore := mockForm("opencode", "workspace")
+	defer restore()
+
+	old := writeFile
+	writeFile = func(name string, data []byte, perm os.FileMode) error {
+		return fmt.Errorf("disk full")
+	}
+	t.Cleanup(func() { writeFile = old })
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err == nil {
+		t.Fatal("expected write error")
+	}
+	if !strings.Contains(err.Error(), "write skill file") {
+		t.Errorf("error = %q, want 'write skill file'", err)
+	}
+}
+
+func TestCmdSetupHomeDirError(t *testing.T) {
+	restore := mockForm("opencode", "global")
+	defer restore()
+
+	old := userHomeDir
+	userHomeDir = func() (string, error) {
+		return "", fmt.Errorf("no home")
+	}
+	t.Cleanup(func() { userHomeDir = old })
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err == nil {
+		t.Fatal("expected error for home dir failure")
+	}
+	if !strings.Contains(err.Error(), "resolve home directory") {
+		t.Errorf("error = %q, want 'resolve home directory'", err)
+	}
+}
+
+func TestRunNoArgsNoDB(t *testing.T) {
+	dir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	var buf bytes.Buffer
+	err := run(nil, &buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "sediment setup") {
+		t.Errorf("output = %q, want setup prompt", buf.String())
 	}
 }

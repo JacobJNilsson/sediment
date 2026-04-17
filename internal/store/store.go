@@ -16,9 +16,17 @@ import (
 // ErrNotFound is returned when a memory does not exist.
 var ErrNotFound = errors.New("memory not found")
 
+// executor is the common interface between *sql.DB and *sql.Tx.
+type executor interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	QueryRow(query string, args ...any) *sql.Row
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
 // DB wraps a SQLite database for memory storage.
 type DB struct {
-	db *sql.DB
+	conn *sql.DB
+	exec executor // points to conn normally, swapped to tx inside RunInTx
 }
 
 // sqlOpen is the function used to open a sql.DB. Overridable for tests.
@@ -35,7 +43,7 @@ func Open(path string) (*DB, error) {
 		sqlDB.Close()
 		return nil, fmt.Errorf("connect to database: %w", err)
 	}
-	return &DB{db: sqlDB}, nil
+	return &DB{conn: sqlDB, exec: sqlDB}, nil
 }
 
 // Migrate runs schema migrations to ensure tables exist.
@@ -56,7 +64,7 @@ func (d *DB) Migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_memories_state ON memories(state);
 	CREATE INDEX IF NOT EXISTS idx_memories_confidence ON memories(confidence);
 	`
-	_, err := d.db.Exec(schema)
+	_, err := d.exec.Exec(schema)
 	if err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
@@ -74,7 +82,7 @@ func MarshalTags(tags []string) string {
 
 // Insert stores a new memory.
 func (d *DB) Insert(m *model.Memory) error {
-	_, err := d.db.Exec(
+	_, err := d.exec.Exec(
 		`INSERT INTO memories (id, content, confidence, state, access_count, created_at, updated_at, last_accessed_at, tags, source)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.Content, m.Confidence, string(m.State), m.AccessCount,
@@ -91,7 +99,7 @@ func (d *DB) Insert(m *model.Memory) error {
 
 // Get retrieves a single memory by ID.
 func (d *DB) Get(id string) (*model.Memory, error) {
-	row := d.db.QueryRow(
+	row := d.exec.QueryRow(
 		`SELECT id, content, confidence, state, access_count, created_at, updated_at, last_accessed_at, tags, source
 		 FROM memories WHERE id = ?`, id,
 	)
@@ -100,7 +108,7 @@ func (d *DB) Get(id string) (*model.Memory, error) {
 
 // Update replaces a memory's mutable fields.
 func (d *DB) Update(m *model.Memory) error {
-	res, err := d.db.Exec(
+	res, err := d.exec.Exec(
 		`UPDATE memories SET content=?, confidence=?, state=?, access_count=?, updated_at=?, last_accessed_at=?, tags=?, source=?
 		 WHERE id=?`,
 		m.Content, m.Confidence, string(m.State), m.AccessCount,
@@ -120,7 +128,7 @@ func (d *DB) Update(m *model.Memory) error {
 
 // Delete removes a memory by ID.
 func (d *DB) Delete(id string) error {
-	res, err := d.db.Exec(`DELETE FROM memories WHERE id = ?`, id)
+	res, err := d.exec.Exec(`DELETE FROM memories WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete memory: %w", err)
 	}
@@ -133,7 +141,7 @@ func (d *DB) Delete(id string) error {
 
 // ListByState returns all memories in a given state, ordered by confidence descending.
 func (d *DB) ListByState(state model.State) ([]*model.Memory, error) {
-	rows, err := d.db.Query(
+	rows, err := d.exec.Query(
 		`SELECT id, content, confidence, state, access_count, created_at, updated_at, last_accessed_at, tags, source
 		 FROM memories WHERE state = ? ORDER BY confidence DESC`, string(state),
 	)
@@ -146,7 +154,7 @@ func (d *DB) ListByState(state model.State) ([]*model.Memory, error) {
 
 // ListAll returns all memories ordered by confidence descending.
 func (d *DB) ListAll() ([]*model.Memory, error) {
-	rows, err := d.db.Query(
+	rows, err := d.exec.Query(
 		`SELECT id, content, confidence, state, access_count, created_at, updated_at, last_accessed_at, tags, source
 		 FROM memories ORDER BY confidence DESC`,
 	)
@@ -157,9 +165,37 @@ func (d *DB) ListAll() ([]*model.Memory, error) {
 	return collectMemories(rows)
 }
 
+// beginTx starts a new transaction. Overridable for tests.
+var beginTx = func(conn *sql.DB) (*sql.Tx, error) {
+	return conn.Begin()
+}
+
+// RunInTx executes fn inside a database transaction. All store operations
+// called on this DB within fn will participate in the transaction. If fn
+// returns an error the transaction is rolled back. Otherwise it is committed.
+func (d *DB) RunInTx(fn func() error) error {
+	tx, err := beginTx(d.conn)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+
+	origExec := d.exec
+	d.exec = tx
+	defer func() { d.exec = origExec }()
+
+	if err := fn(); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
 // Close closes the database connection.
 func (d *DB) Close() error {
-	return d.db.Close()
+	return d.conn.Close()
 }
 
 // scanner is implemented by both *sql.Row and *sql.Rows.

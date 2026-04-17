@@ -20,6 +20,108 @@ import (
 
 const defaultDBFile = ".sediment.db"
 
+const globalUsage = `sediment - AI memory lifecycle manager
+
+Memories are deposited, decay over time, get reinforced through access,
+compressed when redundant, and resolved when contradictory.
+All output is JSON. All commands accept --db <path> (default: .sediment.db).
+
+Commands:
+  init      Initialise a new database
+  status    Show memory counts by lifecycle state
+  deposit   Store a new memory
+  strata    List memories, optionally filtered by state
+  excavate  Retrieve a memory by ID (reinforces its confidence)
+  erode     Run decay cycle: fade confidence, transition stale memories
+  compact   List compression candidates, or merge memories into one
+  resolve   Apply a contradiction resolution (update, supersede, or keep)
+
+Run 'sediment <command> --help' for command-specific usage.`
+
+var commandHelp = map[string]string{
+	"init": `Usage: sediment init [--db <path>]
+
+Initialise a new sediment database. Safe to run on an existing database.
+
+Output: {"status":"ok","path":"<absolute path>"}`,
+
+	"status": `Usage: sediment status [--db <path>]
+
+Show memory counts grouped by lifecycle state (active, dormant, archived).
+
+Output: {"total":N,"active":N,"dormant":N,"archived":N,"path":"..."}`,
+
+	"deposit": `Usage: sediment deposit --content <text> [--tags <a,b,c>] [--source <origin>] [--db <path>]
+
+Store a new memory. Confidence starts at 1.0, state at active.
+
+Flags:
+  --content  (required) The text content of the memory
+  --tags     Comma-separated labels for categorisation
+  --source   Where the memory came from (e.g. conversation ID)
+
+Output: the full memory object as JSON`,
+
+	"strata": `Usage: sediment strata [--state <active|dormant|archived>] [--db <path>]
+
+List memories ordered by confidence (descending). Without --state, lists all.
+
+Flags:
+  --state  Filter to a specific lifecycle state
+
+Output: JSON array of memory objects (or null if empty)`,
+
+	"excavate": `Usage: sediment excavate --id <uuid> [--db <path>]
+
+Retrieve a memory and reinforce it. The act of accessing a memory boosts
+its confidence (counteracting decay). Returns both the pre-boost decayed
+confidence and the post-boost confidence.
+
+Flags:
+  --id  (required) UUID of the memory to excavate
+
+Output: {"memory":{...},"decayed_confidence":N,"boosted_confidence":N,"state":"..."}`,
+
+	"erode": `Usage: sediment erode [--db <path>]
+
+Run a decay cycle across all memories. Applies exponential time-based decay
+to each memory's confidence and transitions memories between lifecycle states:
+  active (≥0.4) → dormant (≥0.1) → archived (<0.1)
+
+All updates run in a single transaction.
+
+Output: {"processed":N,"updated":N,"transitions":[{"id":"...","old_state":"...","new_state":"...","old_confidence":N,"new_confidence":N}]}`,
+
+	"compact": `Usage: sediment compact [--db <path>]
+       sediment compact --apply <content> --sources <id1,id2,...> [--db <path>]
+
+Without --apply: lists dormant and archived memories as compression candidates.
+With --apply: replaces source memories with a single compacted memory.
+
+Flags:
+  --apply    The synthesised content for the compacted memory
+  --sources  Comma-separated IDs of memories to replace (required with --apply)
+
+Candidate output: {"candidates":[...],"count":N}
+Apply output:     {"compacted":{...},"replaced":[...],"source_count":N}`,
+
+	"resolve": `Usage: sediment resolve --action <update|supersede|keep> --id <uuid> [--content <text>] [--db <path>]
+
+Apply a contradiction resolution to an existing memory.
+
+Actions:
+  update     Replace the memory's content in place (requires --content)
+  supersede  Archive the old memory and deposit a corrected one (requires --content)
+  keep       Acknowledge the contradiction but keep the existing memory
+
+Flags:
+  --action   (required) Resolution strategy
+  --id       (required) UUID of the memory to resolve
+  --content  New content (required for update and supersede)
+
+Output varies by action — always includes the affected memory objects as JSON`,
+}
+
 // erodeTransition records a memory that changed lifecycle state during erosion.
 type erodeTransition struct {
 	ID       string      `json:"id"`
@@ -65,30 +167,53 @@ func main() {
 	}
 }
 
+func isHelp(args []string) bool {
+	for _, a := range args {
+		if a == "--help" || a == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
 func run(args []string, w io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: sediment <command> [args]\n\nCommands:\n  init      Initialise a new sediment database\n  status    Show database status\n  deposit   Store a new memory\n  strata    List memory layers\n  excavate  Retrieve a memory by ID (reinforces confidence)\n  erode     Run decay cycle across all memories\n  compact   Identify or apply compression of related memories\n  resolve   Apply a contradiction resolution to a memory")
+		fmt.Fprintln(w, globalUsage)
+		return nil
 	}
 
-	switch args[0] {
+	cmd := args[0]
+	rest := args[1:]
+
+	if cmd == "--help" || cmd == "-h" {
+		fmt.Fprintln(w, globalUsage)
+		return nil
+	}
+
+	if help, ok := commandHelp[cmd]; ok && isHelp(rest) {
+		fmt.Fprintln(w, help)
+		return nil
+	}
+
+	switch cmd {
 	case "init":
-		return cmdInit(args[1:], w)
+		return cmdInit(rest, w)
 	case "status":
-		return cmdStatus(args[1:], w)
+		return cmdStatus(rest, w)
 	case "deposit":
-		return cmdDeposit(args[1:], w)
+		return cmdDeposit(rest, w)
 	case "strata":
-		return cmdStrata(args[1:], w)
+		return cmdStrata(rest, w)
 	case "excavate":
-		return cmdExcavate(args[1:], w)
+		return cmdExcavate(rest, w)
 	case "erode":
-		return cmdErode(args[1:], w)
+		return cmdErode(rest, w)
 	case "compact":
-		return cmdCompact(args[1:], w)
+		return cmdCompact(rest, w)
 	case "resolve":
-		return cmdResolve(args[1:], w)
+		return cmdResolve(rest, w)
 	default:
-		return fmt.Errorf("unknown command: %s", args[0])
+		return fmt.Errorf("unknown command: %s (run 'sediment --help' for usage)", cmd)
 	}
 }
 

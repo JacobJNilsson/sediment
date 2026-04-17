@@ -103,11 +103,40 @@ func TestRunNoArgs(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	err := run(nil, &buf)
-	if err == nil {
-		t.Fatal("expected error with no args")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "usage:") {
-		t.Errorf("error = %q, want usage message", err)
+	if !strings.Contains(buf.String(), "sediment") {
+		t.Errorf("output = %q, want global usage", buf.String())
+	}
+}
+
+func TestRunHelp(t *testing.T) {
+	t.Parallel()
+	for _, flag := range []string{"--help", "-h"} {
+		var buf bytes.Buffer
+		err := run([]string{flag}, &buf)
+		if err != nil {
+			t.Fatalf("run(%s): %v", flag, err)
+		}
+		if !strings.Contains(buf.String(), "Commands:") {
+			t.Errorf("run(%s) output missing Commands section", flag)
+		}
+	}
+}
+
+func TestRunCommandHelp(t *testing.T) {
+	t.Parallel()
+	cmds := []string{"init", "status", "deposit", "strata", "excavate", "erode", "compact", "resolve"}
+	for _, cmd := range cmds {
+		var buf bytes.Buffer
+		err := run([]string{cmd, "--help"}, &buf)
+		if err != nil {
+			t.Fatalf("run(%s --help): %v", cmd, err)
+		}
+		if !strings.Contains(buf.String(), "Usage:") {
+			t.Errorf("run(%s --help) output missing Usage:", cmd)
+		}
 	}
 }
 
@@ -118,8 +147,28 @@ func TestRunUnknownCommand(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown command")
 	}
-	if !strings.Contains(err.Error(), "unknown command: bogus") {
-		t.Errorf("error = %q, want 'unknown command: bogus'", err)
+	if !strings.Contains(err.Error(), "unknown command: bogus (run") {
+		t.Errorf("error = %q, want 'unknown command: bogus (run ...)'", err)
+	}
+}
+
+func TestIsHelp(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		args []string
+		want bool
+	}{
+		{nil, false},
+		{[]string{}, false},
+		{[]string{"--help"}, true},
+		{[]string{"-h"}, true},
+		{[]string{"--db", "/tmp/x", "--help"}, true},
+		{[]string{"--db", "/tmp/x"}, false},
+	}
+	for _, tt := range tests {
+		if got := isHelp(tt.args); got != tt.want {
+			t.Errorf("isHelp(%v) = %v, want %v", tt.args, got, tt.want)
+		}
 	}
 }
 
@@ -1641,7 +1690,7 @@ func TestCmdResolveSupersedeInsertError(t *testing.T) {
 	}
 }
 
-func TestCmdResolveSupersedemissingContent(t *testing.T) {
+func TestCmdResolveSupersedesMissingContent(t *testing.T) {
 	restore := setOpenFunc(func(_ string) (storeI, error) {
 		return &mockStore{
 			getFn: func(_ string) (*model.Memory, error) {

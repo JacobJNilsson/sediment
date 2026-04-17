@@ -8,7 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -438,7 +438,7 @@ func compactApply(db storeI, args []string, content string, w io.Writer) error {
 	for t := range tagSet {
 		tags = append(tags, t)
 	}
-	sort.Strings(tags)
+	slices.Sort(tags)
 
 	now := timeNow()
 	m := &model.Memory{

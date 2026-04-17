@@ -1066,3 +1066,283 @@ func TestCmdErodeDormantTransition(t *testing.T) {
 	}
 }
 
+// --- compact tests ---
+
+func TestCmdCompactCandidates(t *testing.T) {
+	dormant := []*model.Memory{
+		{ID: "d1", State: model.StateDormant, Content: "dormant fact", Tags: []string{}},
+	}
+	archived := []*model.Memory{
+		{ID: "a1", State: model.StateArchived, Content: "archived fact", Tags: []string{}},
+	}
+
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			listByStateFn: func(s model.State) ([]*model.Memory, error) {
+				switch s {
+				case model.StateDormant:
+					return dormant, nil
+				case model.StateArchived:
+					return archived, nil
+				}
+				return nil, nil
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	if err := cmdCompact([]string{}, &buf); err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if result["count"].(float64) != 2 {
+		t.Errorf("count = %v, want 2", result["count"])
+	}
+	candidates := result["candidates"].([]any)
+	if len(candidates) != 2 {
+		t.Errorf("candidates len = %d, want 2", len(candidates))
+	}
+}
+
+func TestCmdCompactCandidatesDormantError(t *testing.T) {
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			listByStateFn: func(s model.State) ([]*model.Memory, error) {
+				if s == model.StateDormant {
+					return nil, fmt.Errorf("dormant query failed")
+				}
+				return nil, nil
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdCompact([]string{}, &buf)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "compact list dormant") {
+		t.Errorf("error = %q, want 'compact list dormant'", err)
+	}
+}
+
+func TestCmdCompactCandidatesArchivedError(t *testing.T) {
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			listByStateFn: func(s model.State) ([]*model.Memory, error) {
+				if s == model.StateArchived {
+					return nil, fmt.Errorf("archived query failed")
+				}
+				return nil, nil
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdCompact([]string{}, &buf)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "compact list archived") {
+		t.Errorf("error = %q, want 'compact list archived'", err)
+	}
+}
+
+func TestCmdCompactApply(t *testing.T) {
+	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	restoreTime := setTimeNow(fixedTime)
+	defer restoreTime()
+	restoreUUID := setUUID("compacted-uuid")
+	defer restoreUUID()
+
+	memStore := map[string]*model.Memory{
+		"s1": {ID: "s1", Content: "fact A", Tags: []string{"alpha", "shared"}, State: model.StateDormant},
+		"s2": {ID: "s2", Content: "fact B", Tags: []string{"beta", "shared"}, State: model.StateArchived},
+	}
+
+	var insertedMem *model.Memory
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			getFn: func(id string) (*model.Memory, error) {
+				m, ok := memStore[id]
+				if !ok {
+					return nil, store.ErrNotFound
+				}
+				cp := *m
+				cp.Tags = append([]string{}, m.Tags...)
+				return &cp, nil
+			},
+			deleteFn: func(id string) error {
+				delete(memStore, id)
+				return nil
+			},
+			insertFn: func(m *model.Memory) error {
+				insertedMem = m
+				return nil
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdCompact([]string{
+		"--apply", "Combined fact about A and B",
+		"--sources", "s1,s2",
+	}, &buf)
+	if err != nil {
+		t.Fatalf("compact apply: %v", err)
+	}
+
+	if insertedMem == nil {
+		t.Fatal("expected a memory to be inserted")
+	}
+	if insertedMem.ID != "compacted-uuid" {
+		t.Errorf("ID = %q, want compacted-uuid", insertedMem.ID)
+	}
+	if insertedMem.Content != "Combined fact about A and B" {
+		t.Errorf("Content = %q", insertedMem.Content)
+	}
+	if insertedMem.Confidence != 0.8 {
+		t.Errorf("Confidence = %v, want 0.8", insertedMem.Confidence)
+	}
+	if !strings.Contains(insertedMem.Source, "compact:") {
+		t.Errorf("Source = %q, want compact: prefix", insertedMem.Source)
+	}
+	// Tags should be sorted and deduplicated from both sources.
+	wantTags := []string{"alpha", "beta", "shared"}
+	if len(insertedMem.Tags) != len(wantTags) {
+		t.Errorf("Tags = %v, want %v", insertedMem.Tags, wantTags)
+	} else {
+		for i, tag := range wantTags {
+			if insertedMem.Tags[i] != tag {
+				t.Errorf("Tags[%d] = %q, want %q", i, insertedMem.Tags[i], tag)
+			}
+		}
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if result["source_count"].(float64) != 2 {
+		t.Errorf("source_count = %v, want 2", result["source_count"])
+	}
+}
+
+func TestCmdCompactApplyMissingSources(t *testing.T) {
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdCompact([]string{"--apply", "merged content"}, &buf)
+	if err == nil {
+		t.Fatal("expected error for missing --sources")
+	}
+	if !strings.Contains(err.Error(), "--sources is required") {
+		t.Errorf("error = %q, want '--sources is required'", err)
+	}
+}
+
+func TestCmdCompactApplyEmptySources(t *testing.T) {
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdCompact([]string{"--apply", "merged", "--sources", " , , "}, &buf)
+	if err == nil {
+		t.Fatal("expected error for empty sources")
+	}
+	if !strings.Contains(err.Error(), "--sources must contain at least one ID") {
+		t.Errorf("error = %q", err)
+	}
+}
+
+func TestCmdCompactApplySourceNotFound(t *testing.T) {
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			getFn: func(_ string) (*model.Memory, error) {
+				return nil, store.ErrNotFound
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdCompact([]string{"--apply", "merged", "--sources", "missing-id"}, &buf)
+	if err == nil {
+		t.Fatal("expected error for missing source")
+	}
+	if !strings.Contains(err.Error(), "compact source") {
+		t.Errorf("error = %q, want 'compact source'", err)
+	}
+}
+
+func TestCmdCompactApplyDeleteError(t *testing.T) {
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			getFn: func(_ string) (*model.Memory, error) {
+				return &model.Memory{ID: "x", Tags: []string{}}, nil
+			},
+			deleteFn: func(_ string) error {
+				return fmt.Errorf("delete failed")
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdCompact([]string{"--apply", "merged", "--sources", "x"}, &buf)
+	if err == nil {
+		t.Fatal("expected delete error")
+	}
+	if !strings.Contains(err.Error(), "compact delete") {
+		t.Errorf("error = %q, want 'compact delete'", err)
+	}
+}
+
+func TestCmdCompactApplyInsertError(t *testing.T) {
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			getFn: func(_ string) (*model.Memory, error) {
+				return &model.Memory{ID: "x", Tags: []string{}}, nil
+			},
+			insertFn: func(_ *model.Memory) error {
+				return fmt.Errorf("insert failed")
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdCompact([]string{"--apply", "merged", "--sources", "x"}, &buf)
+	if err == nil {
+		t.Fatal("expected insert error")
+	}
+	if !strings.Contains(err.Error(), "compact insert") {
+		t.Errorf("error = %q, want 'compact insert'", err)
+	}
+}
+
+func TestCmdCompactInvalidDB(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	err := run([]string{"compact", "--db", "/nonexistent/path/test.db"}, &buf)
+	if err == nil {
+		t.Fatal("expected error for invalid db path")
+	}
+	if !strings.Contains(err.Error(), "open database") {
+		t.Errorf("error = %q, want 'open database'", err)
+	}
+}
+

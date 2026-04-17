@@ -22,3 +22,5 @@ Thumbs.db
 
 # Build
 dist/
+coverage.out
+cov.out

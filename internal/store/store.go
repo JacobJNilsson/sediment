@@ -194,6 +194,11 @@ func scanMemory(s scanner) (*model.Memory, error) {
 	return &m, nil
 }
 
+// rowsIterator abstracts sql.Rows for testing. Overridable for tests.
+var rowsErr = func(rows *sql.Rows) error {
+	return rows.Err()
+}
+
 func collectMemories(rows *sql.Rows) ([]*model.Memory, error) {
 	var memories []*model.Memory
 	for rows.Next() {
@@ -202,6 +207,9 @@ func collectMemories(rows *sql.Rows) ([]*model.Memory, error) {
 			return nil, err
 		}
 		memories = append(memories, m)
+	}
+	if err := rowsErr(rows); err != nil {
+		return nil, fmt.Errorf("iterate rows: %w", err)
 	}
 	return memories, nil
 }

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,6 +85,40 @@ func TestCollectMemoriesScanError(t *testing.T) {
 	_, err = collectMemories(rows)
 	if err == nil {
 		t.Fatal("expected error from collectMemories with bad tags")
+	}
+}
+
+func TestCollectMemoriesRowsErr(t *testing.T) {
+	db := testDB(t)
+
+	now := time.Now().Format(time.RFC3339Nano)
+	_, err := db.Exec(
+		`INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"id-ok", "content", 0.9, "active", 0, now, now, now, `["tag"]`, "",
+	)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// Override rowsErr to simulate an iteration error.
+	old := rowsErr
+	rowsErr = func(_ *sql.Rows) error {
+		return fmt.Errorf("simulated rows error")
+	}
+	t.Cleanup(func() { rowsErr = old })
+
+	rows, err := db.Query(`SELECT * FROM memories`)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+
+	_, err = collectMemories(rows)
+	if err == nil {
+		t.Fatal("expected error from collectMemories")
+	}
+	if !strings.Contains(err.Error(), "iterate rows") {
+		t.Errorf("error = %q, want 'iterate rows'", err)
 	}
 }
 

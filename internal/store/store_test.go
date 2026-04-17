@@ -1,8 +1,11 @@
 package store_test
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,11 +43,25 @@ func testMemory(id, content string) *model.Memory {
 	}
 }
 
+// memoryEqual compares two memories by serialising to JSON.
+// Time fields are compared at second precision to tolerate DB round-trips.
+func memoryEqual(t *testing.T, got, want *model.Memory) {
+	t.Helper()
+	g, _ := json.Marshal(got)
+	w, _ := json.Marshal(want)
+	if string(g) != string(w) {
+		t.Errorf("memory mismatch\n got: %s\nwant: %s", g, w)
+	}
+}
+
 func TestOpenInvalidPath(t *testing.T) {
 	t.Parallel()
 	_, err := store.Open("/nonexistent/dir/db.sqlite")
 	if err == nil {
 		t.Fatal("expected error for invalid path")
+	}
+	if !strings.Contains(err.Error(), "connect to database") {
+		t.Errorf("error = %q, want it to mention 'connect to database'", err)
 	}
 }
 
@@ -71,21 +88,7 @@ func TestInsertAndGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Content != m.Content {
-		t.Errorf("content = %q, want %q", got.Content, m.Content)
-	}
-	if got.Confidence != m.Confidence {
-		t.Errorf("confidence = %v, want %v", got.Confidence, m.Confidence)
-	}
-	if got.State != m.State {
-		t.Errorf("state = %v, want %v", got.State, m.State)
-	}
-	if got.Source != m.Source {
-		t.Errorf("source = %q, want %q", got.Source, m.Source)
-	}
-	if len(got.Tags) != 1 || got.Tags[0] != "test" {
-		t.Errorf("tags = %v, want [test]", got.Tags)
-	}
+	memoryEqual(t, got, m)
 }
 
 func TestGetNotFound(t *testing.T) {
@@ -93,7 +96,7 @@ func TestGetNotFound(t *testing.T) {
 	db := newTestDB(t)
 
 	_, err := db.Get("nonexistent")
-	if err != store.ErrNotFound {
+	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
 }
@@ -111,7 +114,7 @@ func TestUpdate(t *testing.T) {
 	m.Confidence = 0.5
 	m.State = model.StateDormant
 	m.AccessCount = 3
-	m.UpdatedAt = time.Now()
+	m.UpdatedAt = time.Now().Truncate(time.Millisecond)
 	if err := db.Update(m); err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -120,15 +123,7 @@ func TestUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Content != "updated content" {
-		t.Errorf("content = %q, want %q", got.Content, "updated content")
-	}
-	if got.Confidence != 0.5 {
-		t.Errorf("confidence = %v, want 0.5", got.Confidence)
-	}
-	if got.State != model.StateDormant {
-		t.Errorf("state = %v, want dormant", got.State)
-	}
+	memoryEqual(t, got, m)
 }
 
 func TestUpdateNotFound(t *testing.T) {
@@ -137,7 +132,7 @@ func TestUpdateNotFound(t *testing.T) {
 
 	m := testMemory("nonexistent", "content")
 	err := db.Update(m)
-	if err != store.ErrNotFound {
+	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
 }
@@ -154,7 +149,7 @@ func TestDelete(t *testing.T) {
 		t.Fatalf("delete: %v", err)
 	}
 	_, err := db.Get("mem-3")
-	if err != store.ErrNotFound {
+	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("expected ErrNotFound after delete, got %v", err)
 	}
 }
@@ -164,7 +159,7 @@ func TestDeleteNotFound(t *testing.T) {
 	db := newTestDB(t)
 
 	err := db.Delete("nonexistent")
-	if err != store.ErrNotFound {
+	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
 }
@@ -194,10 +189,9 @@ func TestListByState(t *testing.T) {
 	if len(actives) != 2 {
 		t.Fatalf("got %d active memories, want 2", len(actives))
 	}
-	// Should be ordered by confidence DESC.
-	if actives[0].ID != "mem-c" {
-		t.Errorf("first active = %s, want mem-c", actives[0].ID)
-	}
+	// Ordered by confidence DESC: mem-c (0.95) then mem-a (0.8).
+	memoryEqual(t, actives[0], m3)
+	memoryEqual(t, actives[1], m1)
 
 	dormants, err := db.ListByState(model.StateDormant)
 	if err != nil {
@@ -206,6 +200,7 @@ func TestListByState(t *testing.T) {
 	if len(dormants) != 1 {
 		t.Fatalf("got %d dormant memories, want 1", len(dormants))
 	}
+	memoryEqual(t, dormants[0], m2)
 }
 
 func TestListAll(t *testing.T) {
@@ -229,9 +224,9 @@ func TestListAll(t *testing.T) {
 	if len(all) != 2 {
 		t.Fatalf("got %d, want 2", len(all))
 	}
-	if all[0].ID != "mem-y" {
-		t.Errorf("first = %s, want mem-y (highest confidence)", all[0].ID)
-	}
+	// Ordered by confidence DESC: mem-y (0.9) then mem-x (0.5).
+	memoryEqual(t, all[0], m2)
+	memoryEqual(t, all[1], m1)
 }
 
 func TestListByStateEmpty(t *testing.T) {
@@ -286,9 +281,7 @@ func TestInsertEmptyTags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if len(got.Tags) != 0 {
-		t.Errorf("tags = %v, want empty", got.Tags)
-	}
+	memoryEqual(t, got, m)
 }
 
 func TestInsertNilTags(t *testing.T) {
@@ -305,15 +298,15 @@ func TestInsertNilTags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if len(got.Tags) != 0 {
-		t.Errorf("tags = %v, want empty", got.Tags)
-	}
+	// nil tags are stored as "[]" and round-trip back as empty slice.
+	expected := *m
+	expected.Tags = []string{}
+	memoryEqual(t, got, &expected)
 }
 
 func TestOpenPermissionDenied(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	// Make directory read-only so SQLite can't create files.
 	if err := os.Chmod(dir, 0o444); err != nil {
 		t.Skipf("cannot change permissions: %v", err)
 	}
@@ -322,6 +315,9 @@ func TestOpenPermissionDenied(t *testing.T) {
 	_, err := store.Open(filepath.Join(dir, "nope.db"))
 	if err == nil {
 		t.Fatal("expected error for permission-denied path")
+	}
+	if !strings.Contains(err.Error(), "connect to database") {
+		t.Errorf("error = %q, want it to mention 'connect to database'", err)
 	}
 }
 
@@ -341,6 +337,9 @@ func TestListByStateOnClosedDB(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on closed db")
 	}
+	if !strings.Contains(err.Error(), "list by state") {
+		t.Errorf("error = %q, want it to mention 'list by state'", err)
+	}
 }
 
 func TestListAllOnClosedDB(t *testing.T) {
@@ -358,6 +357,9 @@ func TestListAllOnClosedDB(t *testing.T) {
 	_, err = db.ListAll()
 	if err == nil {
 		t.Fatal("expected error on closed db")
+	}
+	if !strings.Contains(err.Error(), "list all") {
+		t.Errorf("error = %q, want it to mention 'list all'", err)
 	}
 }
 
@@ -378,6 +380,9 @@ func TestInsertOnClosedDB(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on closed db")
 	}
+	if !strings.Contains(err.Error(), "insert memory") {
+		t.Errorf("error = %q, want it to mention 'insert memory'", err)
+	}
 }
 
 func TestUpdateOnClosedDB(t *testing.T) {
@@ -397,6 +402,9 @@ func TestUpdateOnClosedDB(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on closed db")
 	}
+	if !strings.Contains(err.Error(), "update memory") {
+		t.Errorf("error = %q, want it to mention 'update memory'", err)
+	}
 }
 
 func TestDeleteOnClosedDB(t *testing.T) {
@@ -414,6 +422,9 @@ func TestDeleteOnClosedDB(t *testing.T) {
 	err = db.Delete("fail")
 	if err == nil {
 		t.Fatal("expected error on closed db")
+	}
+	if !strings.Contains(err.Error(), "delete memory") {
+		t.Errorf("error = %q, want it to mention 'delete memory'", err)
 	}
 }
 
@@ -433,6 +444,9 @@ func TestGetOnClosedDB(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on closed db")
 	}
+	if !strings.Contains(err.Error(), "scan memory") {
+		t.Errorf("error = %q, want it to mention 'scan memory'", err)
+	}
 }
 
 func TestMigrateOnClosedDB(t *testing.T) {
@@ -447,6 +461,9 @@ func TestMigrateOnClosedDB(t *testing.T) {
 	err = db.Migrate()
 	if err == nil {
 		t.Fatal("expected error on closed db")
+	}
+	if !strings.Contains(err.Error(), "migrate") {
+		t.Errorf("error = %q, want it to mention 'migrate'", err)
 	}
 }
 

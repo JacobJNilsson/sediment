@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,14 +52,15 @@ Show memory counts grouped by lifecycle state (active, dormant, archived).
 
 Output: {"total":N,"active":N,"dormant":N,"archived":N,"path":"..."}`,
 
-	"deposit": `Usage: sediment deposit --content <text> [--tags <a,b,c>] [--source <origin>] [--db <path>]
+	"deposit": `Usage: sediment deposit --content <text> [--tags <a,b,c>] [--source <origin>] [--hardness <1-10>] [--db <path>]
 
 Store a new memory. Confidence starts at 1.0, state at active.
 
 Flags:
-  --content  (required) The text content of the memory
-  --tags     Comma-separated labels for categorisation
-  --source   Where the memory came from (e.g. conversation ID)
+  --content   (required) The text content of the memory
+  --tags      Comma-separated labels for categorisation
+  --source    Where the memory came from (e.g. conversation ID)
+  --hardness  Durability on the Mohs scale: 1 (talc, ephemeral) to 10 (diamond, permanent). Default: 5
 
 Output: the full memory object as JSON`,
 
@@ -82,11 +84,18 @@ Flags:
 
 Output: {"memory":{...},"decayed_confidence":N,"boosted_confidence":N,"state":"..."}`,
 
-	"erode": `Usage: sediment erode [--db <path>]
+	"erode": `Usage: sediment erode [--auto] [--db <path>]
 
-Run a decay cycle across all memories. Applies exponential time-based decay
+Run a decay cycle. Applies exponential time-based decay modulated by hardness
 to each memory's confidence and transitions memories between lifecycle states:
   active (≥0.4) → dormant (≥0.1) → archived (<0.1)
+
+Flags:
+  --auto  Automatic mode: tracks sessions, runs quick/standard/deep erosion
+          based on active memory count and session number.
+          - quick:    every session, active memories only
+          - standard: when ≥100 active memories, includes dormant
+          - deep:     every 10th standard erosion, all memories
 
 All updates run in a single transaction.
 
@@ -142,6 +151,8 @@ type storeI interface {
 	Delete(id string) error
 	RunInTx(fn func() error) error
 	Close() error
+	GetMeta(key string) (string, error)
+	SetMeta(key, value string) error
 }
 
 // openFunc is the function used to open a database. Overridable for tests.
@@ -322,6 +333,18 @@ func cmdDeposit(args []string, w io.Writer) error {
 		}
 	}
 
+	hardness := model.HardnessDefault
+	if raw := flagValue(args, "--hardness"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return fmt.Errorf("--hardness must be a number: %w", err)
+		}
+		hardness = model.Hardness(n)
+		if err := hardness.Validate(); err != nil {
+			return err
+		}
+	}
+
 	db, _, err := openAndMigrate(args)
 	if err != nil {
 		return err
@@ -340,6 +363,7 @@ func cmdDeposit(args []string, w io.Writer) error {
 		LastAccessedAt: now,
 		Tags:           tags,
 		Source:         source,
+		Hardness:       hardness,
 	}
 
 	if err := db.Insert(m); err != nil {
@@ -418,18 +442,99 @@ func cmdExcavate(args []string, w io.Writer) error {
 	})
 }
 
+const (
+	metaSessionCount = "session_count"
+	metaLastErode    = "last_erode_at"
+
+	autoErodeActiveThreshold = 100
+	deepErodeEveryN          = 10
+)
+
 func cmdErode(args []string, w io.Writer) error {
+	auto := slices.Contains(args, "--auto")
+
 	db, _, err := openAndMigrate(args)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
 
-	all, err := db.ListAll()
+	if auto {
+		return autoErode(db, w)
+	}
+	return erodeAll(db, w)
+}
+
+func autoErode(db storeI, w io.Writer) error {
+	sessionCount := bumpSession(db)
+
+	active, err := db.ListByState(model.StateActive)
 	if err != nil {
-		return fmt.Errorf("erode list: %w", err)
+		return fmt.Errorf("erode list active: %w", err)
 	}
 
+	needsStandard := len(active) >= autoErodeActiveThreshold
+	needsDeep := needsStandard && sessionCount%deepErodeEveryN == 0
+
+	level := "quick"
+	if needsDeep {
+		level = "deep"
+	} else if needsStandard {
+		level = "standard"
+	}
+
+	result, err := runErosion(db, level)
+	if err != nil {
+		return err
+	}
+	result["level"] = level
+	result["session"] = sessionCount
+	result["active_count"] = len(active)
+
+	db.SetMeta(metaLastErode, timeNow().Format(time.RFC3339))
+
+	return writeJSON(w, result)
+}
+
+func bumpSession(db storeI) int {
+	count := 1
+	if raw, err := db.GetMeta(metaSessionCount); err == nil {
+		if n, err := strconv.Atoi(raw); err == nil {
+			count = n + 1
+		}
+	}
+	db.SetMeta(metaSessionCount, strconv.Itoa(count))
+	return count
+}
+
+func runErosion(db storeI, level string) (map[string]any, error) {
+	var memories []*model.Memory
+	var err error
+
+	switch level {
+	case "quick":
+		memories, err = db.ListByState(model.StateActive)
+	case "standard":
+		active, err1 := db.ListByState(model.StateActive)
+		dormant, err2 := db.ListByState(model.StateDormant)
+		if err1 != nil {
+			return nil, fmt.Errorf("erode list active: %w", err1)
+		}
+		if err2 != nil {
+			return nil, fmt.Errorf("erode list dormant: %w", err2)
+		}
+		memories = append(active, dormant...)
+	case "deep":
+		memories, err = db.ListAll()
+	}
+	if err != nil {
+		return nil, fmt.Errorf("erode list: %w", err)
+	}
+
+	return applyErosion(db, memories)
+}
+
+func applyErosion(db storeI, memories []*model.Memory) (map[string]any, error) {
 	cfg := decay.DefaultConfig()
 	now := timeNow()
 
@@ -443,7 +548,7 @@ func cmdErode(args []string, w io.Writer) error {
 	}
 	var pending []pendingUpdate
 
-	for _, m := range all {
+	for _, m := range memories {
 		oldState := m.State
 		oldConf := m.Confidence
 
@@ -470,7 +575,7 @@ func cmdErode(args []string, w io.Writer) error {
 			}
 			return nil
 		}); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -487,11 +592,24 @@ func cmdErode(args []string, w io.Writer) error {
 		}
 	}
 
-	return writeJSON(w, map[string]any{
-		"processed":   len(all),
+	return map[string]any{
+		"processed":   len(memories),
 		"updated":     updated,
 		"transitions": transitions,
-	})
+	}, nil
+}
+
+func erodeAll(db storeI, w io.Writer) error {
+	all, err := db.ListAll()
+	if err != nil {
+		return fmt.Errorf("erode list: %w", err)
+	}
+
+	result, err := applyErosion(db, all)
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, result)
 }
 
 // cmdCompact has two modes:
@@ -662,6 +780,10 @@ func cmdResolve(args []string, w io.Writer) error {
 		// Archive the old memory and deposit a new one in a single transaction.
 		m.State = model.StateArchived
 		m.UpdatedAt = now
+		hardness := m.Hardness
+		if hardness < model.HardnessMin {
+			hardness = model.HardnessDefault
+		}
 		newMem := &model.Memory{
 			ID:             newUUID(),
 			Content:        content,
@@ -673,6 +795,7 @@ func cmdResolve(args []string, w io.Writer) error {
 			LastAccessedAt: now,
 			Tags:           m.Tags,
 			Source:         "supersede:" + m.ID,
+			Hardness:       hardness,
 		}
 		if err := db.RunInTx(func() error {
 			if err := db.Update(m); err != nil {

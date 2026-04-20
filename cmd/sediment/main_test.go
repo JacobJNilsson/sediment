@@ -24,6 +24,7 @@ type mockStore struct {
 	updateFn      func(*model.Memory) error
 	deleteFn      func(string) error
 	runInTxFn     func(func() error) error
+	meta          map[string]string
 	closed        bool
 }
 
@@ -69,8 +70,24 @@ func (m *mockStore) RunInTx(fn func() error) error {
 	if m.runInTxFn != nil {
 		return m.runInTxFn(fn)
 	}
-	// Default: just run fn directly (no actual transaction in mock).
 	return fn()
+}
+func (m *mockStore) GetMeta(key string) (string, error) {
+	if m.meta == nil {
+		return "", store.ErrNotFound
+	}
+	v, ok := m.meta[key]
+	if !ok {
+		return "", store.ErrNotFound
+	}
+	return v, nil
+}
+func (m *mockStore) SetMeta(key, value string) error {
+	if m.meta == nil {
+		m.meta = make(map[string]string)
+	}
+	m.meta[key] = value
+	return nil
 }
 
 func setOpenFunc(fn func(string) (storeI, error)) func() {
@@ -378,11 +395,79 @@ func TestCmdDeposit(t *testing.T) {
 		LastAccessedAt: fixedTime,
 		Tags:           []string{"preference", "ui"},
 		Source:         "conversation-42",
+		Hardness:       model.HardnessDefault,
 	}
 	wantJSON, _ := json.Marshal(want)
 	gotJSON, _ := json.Marshal(got)
 	if string(gotJSON) != string(wantJSON) {
 		t.Errorf("deposit output\n got: %s\nwant: %s", gotJSON, wantJSON)
+	}
+}
+
+func TestCmdDepositWithHardness(t *testing.T) {
+	dir := t.TempDir()
+	dbFile := filepath.Join(dir, "deposit.db")
+
+	var initBuf bytes.Buffer
+	if err := run([]string{"init", "--db", dbFile}, &initBuf); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	restoreUUID := setUUID("hardness-uuid")
+	defer restoreUUID()
+	restoreTime := setTimeNow(fixedTime)
+	defer restoreTime()
+
+	var buf bytes.Buffer
+	err := run([]string{
+		"deposit",
+		"--db", dbFile,
+		"--content", "Team uses vitest",
+		"--hardness", "9",
+	}, &buf)
+	if err != nil {
+		t.Fatalf("deposit: %v", err)
+	}
+
+	var got model.Memory
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("parse JSON: %v", err)
+	}
+	if got.Hardness != 9 {
+		t.Errorf("Hardness = %d, want 9", got.Hardness)
+	}
+}
+
+func TestCmdDepositInvalidHardness(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	err := run([]string{
+		"deposit",
+		"--content", "test",
+		"--hardness", "15",
+	}, &buf)
+	if err == nil {
+		t.Fatal("expected error for hardness 15")
+	}
+	if !strings.Contains(err.Error(), "out of range") {
+		t.Errorf("error = %q, want 'out of range'", err)
+	}
+}
+
+func TestCmdDepositNonNumericHardness(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	err := run([]string{
+		"deposit",
+		"--content", "test",
+		"--hardness", "abc",
+	}, &buf)
+	if err == nil {
+		t.Fatal("expected error for non-numeric hardness")
+	}
+	if !strings.Contains(err.Error(), "must be a number") {
+		t.Errorf("error = %q, want 'must be a number'", err)
 	}
 }
 
@@ -938,6 +1023,7 @@ func TestCmdErodeWithTransitions(t *testing.T) {
 		UpdatedAt:      fixedTime.Add(-200 * time.Hour),
 		LastAccessedAt: fixedTime.Add(-200 * time.Hour),
 		Tags:           []string{"fact"},
+		Hardness:       1,
 	}
 
 	// Fresh memory: accessed now, no decay.
@@ -949,6 +1035,7 @@ func TestCmdErodeWithTransitions(t *testing.T) {
 		LastAccessedAt: fixedTime,
 		UpdatedAt:      fixedTime,
 		Tags:           []string{},
+		Hardness:       5,
 	}
 
 	var updatedIDs []string
@@ -1083,6 +1170,7 @@ func TestCmdErodeDormantTransition(t *testing.T) {
 		LastAccessedAt: fixedTime.Add(-50 * time.Hour),
 		UpdatedAt:      fixedTime.Add(-50 * time.Hour),
 		Tags:           []string{},
+		Hardness:       1,
 	}
 
 	restore := setOpenFunc(func(_ string) (storeI, error) {
@@ -1112,6 +1200,292 @@ func TestCmdErodeDormantTransition(t *testing.T) {
 	first := ts[0].(map[string]any)
 	if first["new_state"] != "dormant" {
 		t.Errorf("new_state = %v, want dormant", first["new_state"])
+	}
+}
+
+func TestCmdErodeAutoQuick(t *testing.T) {
+	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	restoreTime := setTimeNow(fixedTime)
+	defer restoreTime()
+
+	active := []*model.Memory{
+		{ID: "a1", Content: "fact", Confidence: 0.8, State: model.StateActive, LastAccessedAt: fixedTime, Hardness: 5, Tags: []string{}},
+	}
+
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			listByStateFn: func(s model.State) ([]*model.Memory, error) {
+				if s == model.StateActive {
+					return active, nil
+				}
+				return nil, nil
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	if err := cmdErode([]string{"--auto"}, &buf); err != nil {
+		t.Fatalf("erode --auto: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if result["level"] != "quick" {
+		t.Errorf("level = %v, want quick", result["level"])
+	}
+	if result["session"].(float64) != 1 {
+		t.Errorf("session = %v, want 1", result["session"])
+	}
+}
+
+func TestCmdErodeAutoStandard(t *testing.T) {
+	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	restoreTime := setTimeNow(fixedTime)
+	defer restoreTime()
+
+	active := make([]*model.Memory, 100)
+	for i := range active {
+		active[i] = &model.Memory{
+			ID: fmt.Sprintf("a%d", i), Content: "fact", Confidence: 0.8,
+			State: model.StateActive, LastAccessedAt: fixedTime, Hardness: 5, Tags: []string{},
+		}
+	}
+
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			listByStateFn: func(s model.State) ([]*model.Memory, error) {
+				if s == model.StateActive {
+					return active, nil
+				}
+				if s == model.StateDormant {
+					return nil, nil
+				}
+				return nil, nil
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	if err := cmdErode([]string{"--auto"}, &buf); err != nil {
+		t.Fatalf("erode --auto: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if result["level"] != "standard" {
+		t.Errorf("level = %v, want standard", result["level"])
+	}
+}
+
+func TestCmdErodeAutoDeep(t *testing.T) {
+	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	restoreTime := setTimeNow(fixedTime)
+	defer restoreTime()
+
+	active := make([]*model.Memory, 100)
+	for i := range active {
+		active[i] = &model.Memory{
+			ID: fmt.Sprintf("a%d", i), Content: "fact", Confidence: 0.8,
+			State: model.StateActive, LastAccessedAt: fixedTime, Hardness: 5, Tags: []string{},
+		}
+	}
+
+	ms := &mockStore{
+		meta: map[string]string{metaSessionCount: "9"},
+		listByStateFn: func(s model.State) ([]*model.Memory, error) {
+			if s == model.StateActive {
+				return active, nil
+			}
+			return nil, nil
+		},
+		listAllFn: func() ([]*model.Memory, error) {
+			return active, nil
+		},
+	}
+
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return ms, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	if err := cmdErode([]string{"--auto"}, &buf); err != nil {
+		t.Fatalf("erode --auto: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if result["level"] != "deep" {
+		t.Errorf("level = %v, want deep", result["level"])
+	}
+	if result["session"].(float64) != 10 {
+		t.Errorf("session = %v, want 10", result["session"])
+	}
+}
+
+func TestBumpSession(t *testing.T) {
+	ms := &mockStore{}
+
+	n1 := bumpSession(ms)
+	if n1 != 1 {
+		t.Errorf("first bump = %d, want 1", n1)
+	}
+
+	n2 := bumpSession(ms)
+	if n2 != 2 {
+		t.Errorf("second bump = %d, want 2", n2)
+	}
+}
+
+func TestCmdErodeAutoListError(t *testing.T) {
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return &mockStore{
+			listByStateFn: func(s model.State) ([]*model.Memory, error) {
+				return nil, fmt.Errorf("list failed")
+			},
+		}, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdErode([]string{"--auto"}, &buf)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "erode list active") {
+		t.Errorf("error = %q, want 'erode list active'", err)
+	}
+}
+
+func TestRunErosionStandardErrors(t *testing.T) {
+	calls := 0
+	ms := &mockStore{
+		listByStateFn: func(s model.State) ([]*model.Memory, error) {
+			calls++
+			if calls == 1 {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("dormant fail")
+		},
+	}
+
+	_, err := runErosion(ms, "standard")
+	if err == nil {
+		t.Fatal("expected dormant error")
+	}
+	if !strings.Contains(err.Error(), "erode list dormant") {
+		t.Errorf("error = %q, want 'erode list dormant'", err)
+	}
+}
+
+func TestRunErosionStandardActiveError(t *testing.T) {
+	ms := &mockStore{
+		listByStateFn: func(s model.State) ([]*model.Memory, error) {
+			if s == model.StateActive {
+				return nil, fmt.Errorf("active fail")
+			}
+			return nil, nil
+		},
+	}
+
+	_, err := runErosion(ms, "standard")
+	if err == nil {
+		t.Fatal("expected active error")
+	}
+	if !strings.Contains(err.Error(), "erode list active") {
+		t.Errorf("error = %q, want 'erode list active'", err)
+	}
+}
+
+func TestRunErosionQuickError(t *testing.T) {
+	ms := &mockStore{
+		listByStateFn: func(s model.State) ([]*model.Memory, error) {
+			return nil, fmt.Errorf("quick fail")
+		},
+	}
+
+	_, err := runErosion(ms, "quick")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestRunErosionDeepError(t *testing.T) {
+	ms := &mockStore{
+		listAllFn: func() ([]*model.Memory, error) {
+			return nil, fmt.Errorf("deep fail")
+		},
+	}
+
+	_, err := runErosion(ms, "deep")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestAutoErodeRunErosionError(t *testing.T) {
+	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	restoreTime := setTimeNow(fixedTime)
+	defer restoreTime()
+
+	calls := 0
+	ms := &mockStore{
+		listByStateFn: func(s model.State) ([]*model.Memory, error) {
+			calls++
+			if calls == 1 {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("quick fail")
+		},
+	}
+
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return ms, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdErode([]string{"--auto"}, &buf)
+	if err == nil {
+		t.Fatal("expected error from runErosion failure")
+	}
+}
+
+func TestAutoErodeSetMetaError(t *testing.T) {
+	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	restoreTime := setTimeNow(fixedTime)
+	defer restoreTime()
+
+	ms := &mockStore{
+		listByStateFn: func(s model.State) ([]*model.Memory, error) {
+			return nil, nil
+		},
+	}
+
+	restore := setOpenFunc(func(_ string) (storeI, error) {
+		return ms, nil
+	})
+	defer restore()
+
+	var buf bytes.Buffer
+	if err := cmdErode([]string{"--auto"}, &buf); err != nil {
+		t.Fatalf("erode --auto: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if result["level"] != "quick" {
+		t.Errorf("level = %v, want quick", result["level"])
 	}
 }
 

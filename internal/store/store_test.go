@@ -467,6 +467,102 @@ func TestMigrateOnClosedDB(t *testing.T) {
 	}
 }
 
+func TestMetaGetSetRoundTrip(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "meta.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	_, err = db.GetMeta("missing")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("GetMeta(missing) = %v, want ErrNotFound", err)
+	}
+
+	if err := db.SetMeta("key1", "value1"); err != nil {
+		t.Fatalf("SetMeta: %v", err)
+	}
+	got, err := db.GetMeta("key1")
+	if err != nil {
+		t.Fatalf("GetMeta: %v", err)
+	}
+	if got != "value1" {
+		t.Errorf("GetMeta = %q, want value1", got)
+	}
+
+	if err := db.SetMeta("key1", "updated"); err != nil {
+		t.Fatalf("SetMeta upsert: %v", err)
+	}
+	got, err = db.GetMeta("key1")
+	if err != nil {
+		t.Fatalf("GetMeta: %v", err)
+	}
+	if got != "updated" {
+		t.Errorf("GetMeta after upsert = %q, want updated", got)
+	}
+}
+
+func TestMigrateIdempotent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "meta-err.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("re-migrate should be idempotent: %v", err)
+	}
+	db.Close()
+}
+
+func TestSetMetaError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "seterr.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	db.Close()
+
+	err = db.SetMeta("key", "val")
+	if err == nil {
+		t.Fatal("expected error on closed db")
+	}
+}
+
+func TestGetMetaError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "geterr.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	db.Close()
+
+	_, err = db.GetMeta("key")
+	if err == nil {
+		t.Fatal("expected error on closed db")
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		t.Error("should be a real error, not ErrNotFound")
+	}
+}
+
 func TestMarshalTags(t *testing.T) {
 	t.Parallel()
 

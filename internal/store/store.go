@@ -59,14 +59,45 @@ func (d *DB) Migrate() error {
 		updated_at      TEXT NOT NULL,
 		last_accessed_at TEXT NOT NULL,
 		tags            TEXT NOT NULL DEFAULT '[]',
-		source          TEXT NOT NULL DEFAULT ''
+		source          TEXT NOT NULL DEFAULT '',
+		hardness        INTEGER NOT NULL DEFAULT 5
 	);
 	CREATE INDEX IF NOT EXISTS idx_memories_state ON memories(state);
 	CREATE INDEX IF NOT EXISTS idx_memories_confidence ON memories(confidence);
+	CREATE TABLE IF NOT EXISTS meta (
+		key   TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	);
 	`
 	_, err := d.exec.Exec(schema)
 	if err != nil {
 		return fmt.Errorf("migrate: %w", err)
+	}
+
+	d.exec.Exec(`ALTER TABLE memories ADD COLUMN hardness INTEGER NOT NULL DEFAULT 5`)
+
+	return nil
+}
+
+func (d *DB) GetMeta(key string) (string, error) {
+	var value string
+	err := d.exec.QueryRow(`SELECT value FROM meta WHERE key = ?`, key).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("get meta %q: %w", key, err)
+	}
+	return value, nil
+}
+
+func (d *DB) SetMeta(key, value string) error {
+	_, err := d.exec.Exec(
+		`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		key, value,
+	)
+	if err != nil {
+		return fmt.Errorf("set meta %q: %w", key, err)
 	}
 	return nil
 }
@@ -83,13 +114,13 @@ func MarshalTags(tags []string) string {
 // Insert stores a new memory.
 func (d *DB) Insert(m *model.Memory) error {
 	_, err := d.exec.Exec(
-		`INSERT INTO memories (id, content, confidence, state, access_count, created_at, updated_at, last_accessed_at, tags, source)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO memories (id, content, confidence, state, access_count, created_at, updated_at, last_accessed_at, tags, source, hardness)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.Content, m.Confidence, string(m.State), m.AccessCount,
 		m.CreatedAt.Format(time.RFC3339Nano),
 		m.UpdatedAt.Format(time.RFC3339Nano),
 		m.LastAccessedAt.Format(time.RFC3339Nano),
-		MarshalTags(m.Tags), m.Source,
+		MarshalTags(m.Tags), m.Source, int(m.Hardness),
 	)
 	if err != nil {
 		return fmt.Errorf("insert memory: %w", err)
@@ -100,7 +131,7 @@ func (d *DB) Insert(m *model.Memory) error {
 // Get retrieves a single memory by ID.
 func (d *DB) Get(id string) (*model.Memory, error) {
 	row := d.exec.QueryRow(
-		`SELECT id, content, confidence, state, access_count, created_at, updated_at, last_accessed_at, tags, source
+		`SELECT id, content, confidence, state, access_count, created_at, updated_at, last_accessed_at, tags, source, hardness
 		 FROM memories WHERE id = ?`, id,
 	)
 	return scanMemory(row)
@@ -109,12 +140,14 @@ func (d *DB) Get(id string) (*model.Memory, error) {
 // Update replaces a memory's mutable fields.
 func (d *DB) Update(m *model.Memory) error {
 	res, err := d.exec.Exec(
-		`UPDATE memories SET content=?, confidence=?, state=?, access_count=?, updated_at=?, last_accessed_at=?, tags=?, source=?
-		 WHERE id=?`,
+		`UPDATE memories
+		 SET content = ?, confidence = ?, state = ?, access_count = ?,
+		     updated_at = ?, last_accessed_at = ?, tags = ?, source = ?, hardness = ?
+		 WHERE id = ?`,
 		m.Content, m.Confidence, string(m.State), m.AccessCount,
 		m.UpdatedAt.Format(time.RFC3339Nano),
 		m.LastAccessedAt.Format(time.RFC3339Nano),
-		MarshalTags(m.Tags), m.Source, m.ID,
+		MarshalTags(m.Tags), m.Source, int(m.Hardness), m.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update memory: %w", err)
@@ -142,7 +175,7 @@ func (d *DB) Delete(id string) error {
 // ListByState returns all memories in a given state, ordered by confidence descending.
 func (d *DB) ListByState(state model.State) ([]*model.Memory, error) {
 	rows, err := d.exec.Query(
-		`SELECT id, content, confidence, state, access_count, created_at, updated_at, last_accessed_at, tags, source
+		`SELECT id, content, confidence, state, access_count, created_at, updated_at, last_accessed_at, tags, source, hardness
 		 FROM memories WHERE state = ? ORDER BY confidence DESC`, string(state),
 	)
 	if err != nil {
@@ -155,7 +188,7 @@ func (d *DB) ListByState(state model.State) ([]*model.Memory, error) {
 // ListAll returns all memories ordered by confidence descending.
 func (d *DB) ListAll() ([]*model.Memory, error) {
 	rows, err := d.exec.Query(
-		`SELECT id, content, confidence, state, access_count, created_at, updated_at, last_accessed_at, tags, source
+		`SELECT id, content, confidence, state, access_count, created_at, updated_at, last_accessed_at, tags, source, hardness
 		 FROM memories ORDER BY confidence DESC`,
 	)
 	if err != nil {
@@ -210,9 +243,10 @@ func scanMemory(s scanner) (*model.Memory, error) {
 		createdAt, updatedAt, lastAccessedAt string
 		tagsJSON                             string
 	)
+	var hardness int
 	err := s.Scan(
 		&m.ID, &m.Content, &m.Confidence, &state, &m.AccessCount,
-		&createdAt, &updatedAt, &lastAccessedAt, &tagsJSON, &m.Source,
+		&createdAt, &updatedAt, &lastAccessedAt, &tagsJSON, &m.Source, &hardness,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -227,6 +261,7 @@ func scanMemory(s scanner) (*model.Memory, error) {
 	if err := json.Unmarshal([]byte(tagsJSON), &m.Tags); err != nil {
 		return nil, fmt.Errorf("unmarshal tags: %w", err)
 	}
+	m.Hardness = model.Hardness(hardness)
 	return &m, nil
 }
 

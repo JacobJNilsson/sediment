@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Format
+        run: |
+          UNFMT=$(gofmt -l .)
+          if [ -n "$UNFMT" ]; then
+            echo "Files not formatted:"
+            echo "$UNFMT"
+            exit 1
+          fi
+
+      - name: Lint
+        run: go vet ./...
+
+      - name: Test with coverage
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Enforce 100% coverage
+        run: |
+          UNCOVERED=$(go tool cover -func=coverage.out | grep -v '100.0%' | grep -v '^total:' | grep -v '\.go:[0-9]*:	main	' || true)
+          if [ -n "$UNCOVERED" ]; then
+            echo "Functions not at 100% coverage:"
+            echo "$UNCOVERED"
+            exit 1
+          fi

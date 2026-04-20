@@ -26,4 +26,12 @@ if [ -n "$UNCOVERED" ]; then
 fi
 
 rm -f coverage.out
+
+echo "==> plugin tests"
+if command -v bun >/dev/null 2>&1 && [ -f .opencode/plugins/sediment.test.ts ]; then
+    bun test ./.opencode/plugins/sediment.test.ts
+else
+    echo "    (skipped: bun not installed or test file missing)"
+fi
+
 echo "==> All checks passed"

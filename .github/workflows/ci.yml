@@ -42,3 +42,8 @@ jobs:
             echo "$UNCOVERED"
             exit 1
           fi
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Plugin tests
+        run: bun test ./.opencode/plugins/sediment.test.ts

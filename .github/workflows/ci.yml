@@ -43,6 +43,9 @@ jobs:
             exit 1
           fi
 
+      - name: Build sediment binary
+        run: go build -o /usr/local/bin/sediment ./cmd/sediment
+
       - uses: oven-sh/setup-bun@v2
 
       - name: Install plugin dependencies

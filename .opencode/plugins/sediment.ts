@@ -18,10 +18,7 @@ export const SedimentPlugin: Plugin = async ({ $, directory }) => {
   const dbPath = `${directory}/.sediment.db`
 
   const sediment = async (args: string[]) => {
-    const escaped = args.map((a) => $.escape(a))
-    const escapedDb = $.escape(dbPath)
-    const result =
-      await $`sediment ${escaped.join(" ")} --db ${escapedDb}`.quiet()
+    const result = await $`sediment ${args} --db ${dbPath}`.quiet()
     return result.text().trim()
   }
 

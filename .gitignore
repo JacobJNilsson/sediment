@@ -23,6 +23,9 @@ Thumbs.db
 # Build
 dist/
 
+# Plugin node_modules
+.opencode/node_modules/
+
 # Agent memory (repo-local, not source)
 .sediment.db
 .sediment.db-wal

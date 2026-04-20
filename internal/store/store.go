@@ -10,6 +10,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3" // SQLite driver
 
+	"github.com/jacobjnilsson/sediment/internal/migrate"
 	"github.com/jacobjnilsson/sediment/internal/model"
 )
 
@@ -47,36 +48,35 @@ func Open(path string) (*DB, error) {
 }
 
 // Migrate runs schema migrations to ensure tables exist.
+var migrations = []migrate.Migration{
+	{
+		Version:     1,
+		Description: "initial schema",
+		Up: func(ctx migrate.Context) error {
+			_, err := ctx.DB.Exec(`
+				CREATE TABLE IF NOT EXISTS memories (
+					id               TEXT PRIMARY KEY,
+					content          TEXT NOT NULL,
+					confidence       REAL NOT NULL DEFAULT 1.0,
+					state            TEXT NOT NULL DEFAULT 'active',
+					access_count     INTEGER NOT NULL DEFAULT 0,
+					created_at       TEXT NOT NULL,
+					updated_at       TEXT NOT NULL,
+					last_accessed_at TEXT NOT NULL,
+					tags             TEXT NOT NULL DEFAULT '[]',
+					source           TEXT NOT NULL DEFAULT '',
+					hardness         INTEGER NOT NULL DEFAULT 5
+				);
+				CREATE INDEX IF NOT EXISTS idx_memories_state ON memories(state);
+				CREATE INDEX IF NOT EXISTS idx_memories_confidence ON memories(confidence);
+			`)
+			return err
+		},
+	},
+}
+
 func (d *DB) Migrate() error {
-	const schema = `
-	CREATE TABLE IF NOT EXISTS memories (
-		id              TEXT PRIMARY KEY,
-		content         TEXT NOT NULL,
-		confidence      REAL NOT NULL DEFAULT 1.0,
-		state           TEXT NOT NULL DEFAULT 'active',
-		access_count    INTEGER NOT NULL DEFAULT 0,
-		created_at      TEXT NOT NULL,
-		updated_at      TEXT NOT NULL,
-		last_accessed_at TEXT NOT NULL,
-		tags            TEXT NOT NULL DEFAULT '[]',
-		source          TEXT NOT NULL DEFAULT '',
-		hardness        INTEGER NOT NULL DEFAULT 5
-	);
-	CREATE INDEX IF NOT EXISTS idx_memories_state ON memories(state);
-	CREATE INDEX IF NOT EXISTS idx_memories_confidence ON memories(confidence);
-	CREATE TABLE IF NOT EXISTS meta (
-		key   TEXT PRIMARY KEY,
-		value TEXT NOT NULL
-	);
-	`
-	_, err := d.exec.Exec(schema)
-	if err != nil {
-		return fmt.Errorf("migrate: %w", err)
-	}
-
-	d.exec.Exec(`ALTER TABLE memories ADD COLUMN hardness INTEGER NOT NULL DEFAULT 5`)
-
-	return nil
+	return migrate.Run(d.conn, "", migrations)
 }
 
 func (d *DB) GetMeta(key string) (string, error) {

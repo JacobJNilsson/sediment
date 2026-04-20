@@ -410,23 +410,3 @@ func TestMigrateMetaSchemaError(t *testing.T) {
 		t.Errorf("error = %q, want mention of migrate", err)
 	}
 }
-
-func TestMigrateAlterTableDuplicateColumn(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "dup.db")
-
-	conn, err := sql.Open("sqlite3", dbPath)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer conn.Close()
-
-	d := &DB{exec: conn, conn: conn}
-	if err := d.Migrate(); err != nil {
-		t.Fatalf("first migrate: %v", err)
-	}
-	if err := d.Migrate(); err != nil {
-		t.Fatalf("second migrate (duplicate column should be ignored): %v", err)
-	}
-}

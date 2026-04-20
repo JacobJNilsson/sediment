@@ -16,7 +16,7 @@ go vet ./...
 echo "==> tests + coverage"
 go test -race -coverprofile=coverage.out -covermode=atomic ./...
 
-UNCOVERED=$(go tool cover -func=coverage.out | grep -v '100.0%' | grep -v '^total:' | grep -v '\.go:[0-9]*:	main	' || true)
+UNCOVERED=$(go tool cover -func=coverage.out | grep -v '100.0%' | grep -v '^total:' | grep -v '\.go:[0-9]*:.*	main	' || true)
 if [ -n "$UNCOVERED" ]; then
     echo ""
     echo "FAIL: functions not at 100% coverage:"

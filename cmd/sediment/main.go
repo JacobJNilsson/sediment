@@ -255,6 +255,8 @@ var userHomeDir = os.UserHomeDir
 // writeFile wraps os.WriteFile. Overridable for tests.
 var writeFile = os.WriteFile
 
+var version = "dev"
+
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -289,6 +291,11 @@ func run(args []string, w io.Writer) error {
 
 	if cmd == "--help" || cmd == "-h" {
 		fmt.Fprintln(w, globalUsage)
+		return nil
+	}
+
+	if cmd == "--version" {
+		fmt.Fprintln(w, version)
 		return nil
 	}
 

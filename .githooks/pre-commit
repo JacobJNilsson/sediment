@@ -27,6 +27,13 @@ fi
 
 rm -f coverage.out
 
+echo "==> plugin typecheck"
+if command -v bun >/dev/null 2>&1 && [ -f .opencode/tsconfig.json ]; then
+    (cd .opencode && bun tsc --noEmit)
+else
+    echo "    (skipped: bun not installed or tsconfig missing)"
+fi
+
 echo "==> plugin tests"
 if command -v bun >/dev/null 2>&1 && [ -f .opencode/plugins/sediment.test.ts ]; then
     bun test ./.opencode/plugins/sediment.test.ts

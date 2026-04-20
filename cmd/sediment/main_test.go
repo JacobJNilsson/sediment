@@ -28,8 +28,8 @@ type mockStore struct {
 	closed        bool
 }
 
-func (m *mockStore) Migrate() error { return m.migrateErr }
-func (m *mockStore) Close() error   { m.closed = true; return nil }
+func (m *mockStore) Migrate(_ string) error { return m.migrateErr }
+func (m *mockStore) Close() error           { m.closed = true; return nil }
 func (m *mockStore) ListAll() ([]*model.Memory, error) {
 	if m.listAllFn != nil {
 		return m.listAllFn()
@@ -765,8 +765,8 @@ func TestOpenAndMigrateOpenError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected open error")
 	}
-	if !strings.Contains(err.Error(), "open database") {
-		t.Errorf("error = %q, want 'open database'", err)
+	if !strings.Contains(err.Error(), "cannot open") {
+		t.Errorf("error = %q, want 'cannot open'", err)
 	}
 }
 

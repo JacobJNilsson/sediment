@@ -109,6 +109,35 @@ func TestRunStopsOnError(t *testing.T) {
 	}
 }
 
+func TestRunSortsOutOfOrder(t *testing.T) {
+	t.Parallel()
+	db := openDB(t)
+
+	var order []int
+	migrations := []migrate.Migration{
+		{Version: 3, Description: "third", Up: func(ctx migrate.Context) error {
+			order = append(order, 3)
+			return nil
+		}},
+		{Version: 1, Description: "first", Up: func(ctx migrate.Context) error {
+			order = append(order, 1)
+			return nil
+		}},
+		{Version: 2, Description: "second", Up: func(ctx migrate.Context) error {
+			order = append(order, 2)
+			return nil
+		}},
+	}
+
+	if err := migrate.Run(db, t.TempDir(), migrations); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(order) != 3 || order[0] != 1 || order[1] != 2 || order[2] != 3 {
+		t.Errorf("order = %v, want [1 2 3]", order)
+	}
+}
+
 func TestRunPassesDataDir(t *testing.T) {
 	t.Parallel()
 	db := openDB(t)

@@ -47,7 +47,6 @@ func Open(path string) (*DB, error) {
 	return &DB{conn: sqlDB, exec: sqlDB}, nil
 }
 
-// Migrate runs schema migrations to ensure tables exist.
 var migrations = []migrate.Migration{
 	{
 		Version:     1,
@@ -64,8 +63,7 @@ var migrations = []migrate.Migration{
 					updated_at       TEXT NOT NULL,
 					last_accessed_at TEXT NOT NULL,
 					tags             TEXT NOT NULL DEFAULT '[]',
-					source           TEXT NOT NULL DEFAULT '',
-					hardness         INTEGER NOT NULL DEFAULT 5
+					source           TEXT NOT NULL DEFAULT ''
 				);
 				CREATE INDEX IF NOT EXISTS idx_memories_state ON memories(state);
 				CREATE INDEX IF NOT EXISTS idx_memories_confidence ON memories(confidence);
@@ -73,10 +71,19 @@ var migrations = []migrate.Migration{
 			return err
 		},
 	},
+	{
+		Version:     2,
+		Description: "add hardness column",
+		Up: func(ctx migrate.Context) error {
+			_, err := ctx.DB.Exec(`ALTER TABLE memories ADD COLUMN hardness INTEGER NOT NULL DEFAULT 5`)
+			return err
+		},
+	},
 }
 
-func (d *DB) Migrate() error {
-	return migrate.Run(d.conn, "", migrations)
+// Migrate runs all pending schema and data migrations.
+func (d *DB) Migrate(dataDir string) error {
+	return migrate.Run(d.conn, dataDir, migrations)
 }
 
 func (d *DB) GetMeta(key string) (string, error) {

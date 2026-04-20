@@ -8,6 +8,7 @@ package migrate
 import (
 	"database/sql"
 	"fmt"
+	"slices"
 	"strconv"
 )
 
@@ -26,10 +27,16 @@ type Migration struct {
 
 const metaKey = "schema_version"
 
-// Run executes all pending migrations in order. It bootstraps the meta table
-// if it does not exist, reads the current schema version, and applies each
-// migration whose version exceeds the current one.
+// Run executes all pending migrations in order. It sorts migrations by version,
+// bootstraps the meta table if it does not exist, reads the current schema
+// version, and applies each migration whose version exceeds the current one.
 func Run(db *sql.DB, dataDir string, migrations []Migration) error {
+	sorted := make([]Migration, len(migrations))
+	copy(sorted, migrations)
+	slices.SortFunc(sorted, func(a, b Migration) int {
+		return a.Version - b.Version
+	})
+
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`); err != nil {
 		return fmt.Errorf("migrate: bootstrap meta: %w", err)
 	}
@@ -41,7 +48,7 @@ func Run(db *sql.DB, dataDir string, migrations []Migration) error {
 
 	ctx := Context{DB: db, DataDir: dataDir}
 
-	for _, m := range migrations {
+	for _, m := range sorted {
 		if m.Version <= current {
 			continue
 		}

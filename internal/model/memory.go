@@ -5,7 +5,35 @@
 // excavated when needed.
 package model
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
+
+// Hardness represents durability on the Mohs scale (1–10).
+// Softer memories erode faster; harder memories resist decay.
+//
+//	1–3  Talc–Calcite:    situational, one-off (high decay rate)
+//	4–6  Fluorite–Feldspar: decisions, preferences (moderate decay)
+//	7–10 Quartz–Diamond:   conventions, patterns  (low decay rate)
+type Hardness int
+
+const (
+	HardnessMin     Hardness = 1
+	HardnessDefault Hardness = 5
+	HardnessMax     Hardness = 10
+)
+
+func (h Hardness) Valid() bool {
+	return h >= HardnessMin && h <= HardnessMax
+}
+
+func (h Hardness) Validate() error {
+	if !h.Valid() {
+		return fmt.Errorf("hardness %d out of range [%d, %d]", h, HardnessMin, HardnessMax)
+	}
+	return nil
+}
 
 // State represents the lifecycle state of a memory.
 type State string
@@ -41,6 +69,8 @@ type Memory struct {
 	Tags []string `json:"tags"`
 	// Source records where the memory came from (optional).
 	Source string `json:"source,omitempty"`
+	// Hardness is the durability rating on the Mohs scale (1–10).
+	Hardness Hardness `json:"hardness"`
 }
 
 // ValidStates is the set of recognised lifecycle states.

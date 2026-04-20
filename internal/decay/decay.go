@@ -42,13 +42,23 @@ func DefaultConfig() Config {
 	}
 }
 
+// EffectiveLambda adjusts the base decay rate by hardness.
+// Harder memories decay more slowly: lambda_eff = lambda / hardness.
+func EffectiveLambda(lambda float64, h model.Hardness) float64 {
+	if h < model.HardnessMin {
+		h = model.HardnessDefault
+	}
+	return lambda / float64(h)
+}
+
 // CurrentConfidence computes the decayed confidence at the given time.
 func CurrentConfidence(m *model.Memory, now time.Time, lambda float64) float64 {
 	hours := now.Sub(m.LastAccessedAt).Hours()
 	if hours < 0 {
 		hours = 0
 	}
-	decayed := m.Confidence * math.Exp(-lambda*hours)
+	effectiveLambda := EffectiveLambda(lambda, m.Hardness)
+	decayed := m.Confidence * math.Exp(-effectiveLambda*hours)
 	return clamp(decayed, 0, 1)
 }
 

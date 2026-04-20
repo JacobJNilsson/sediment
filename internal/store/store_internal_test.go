@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -22,7 +23,8 @@ func testDB(t *testing.T) *sql.DB {
 	CREATE TABLE memories (
 		id TEXT PRIMARY KEY, content TEXT, confidence REAL,
 		state TEXT, access_count INTEGER, created_at TEXT,
-		updated_at TEXT, last_accessed_at TEXT, tags TEXT, source TEXT
+		updated_at TEXT, last_accessed_at TEXT, tags TEXT, source TEXT,
+		hardness INTEGER NOT NULL DEFAULT 5
 	)`)
 	if err != nil {
 		t.Fatalf("create table: %v", err)
@@ -37,8 +39,8 @@ func TestScanMemoryUnmarshalTagsError(t *testing.T) {
 
 	now := time.Now().Format(time.RFC3339Nano)
 	_, err := db.Exec(
-		`INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		"id-1", "content", 0.9, "active", 0, now, now, now, "NOT-JSON", "",
+		`INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"id-1", "content", 0.9, "active", 0, now, now, now, "NOT-JSON", "", 5,
 	)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
@@ -61,8 +63,8 @@ func TestScanMemoryScanError(t *testing.T) {
 	// Wrong column count triggers a scan error on an existing row.
 	now := time.Now().Format(time.RFC3339Nano)
 	_, err := db.Exec(
-		`INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		"id-scan", "content", 0.9, "active", 0, now, now, now, "[]", "",
+		`INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"id-scan", "content", 0.9, "active", 0, now, now, now, "[]", "", 5,
 	)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
@@ -84,8 +86,8 @@ func TestCollectMemoriesScanError(t *testing.T) {
 
 	now := time.Now().Format(time.RFC3339Nano)
 	_, err := db.Exec(
-		`INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		"id-2", "content", 0.9, "active", 0, now, now, now, "BAD-JSON", "",
+		`INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"id-2", "content", 0.9, "active", 0, now, now, now, "BAD-JSON", "", 5,
 	)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
@@ -111,8 +113,8 @@ func TestCollectMemoriesRowsErr(t *testing.T) {
 
 	now := time.Now().Format(time.RFC3339Nano)
 	_, err := db.Exec(
-		`INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		"id-ok", "content", 0.9, "active", 0, now, now, now, `["tag"]`, "",
+		`INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"id-ok", "content", 0.9, "active", 0, now, now, now, `["tag"]`, "", 5,
 	)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
@@ -378,5 +380,53 @@ func TestRunInTxMultipleOps(t *testing.T) {
 	_, err = d.Get("tx-m1")
 	if err != ErrNotFound {
 		t.Errorf("expected ErrNotFound for m1, got %v", err)
+	}
+}
+
+func TestMigrateMetaSchemaError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "metaerr.db")
+
+	rawDB, err := os.Create(dbPath)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	rawDB.WriteString("not a database")
+	rawDB.Close()
+
+	conn, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer conn.Close()
+
+	d := &DB{exec: conn, conn: conn}
+	err = d.Migrate()
+	if err == nil {
+		t.Fatal("expected error on corrupt db")
+	}
+	if !strings.Contains(err.Error(), "migrate") {
+		t.Errorf("error = %q, want mention of migrate", err)
+	}
+}
+
+func TestMigrateAlterTableDuplicateColumn(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "dup.db")
+
+	conn, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer conn.Close()
+
+	d := &DB{exec: conn, conn: conn}
+	if err := d.Migrate(); err != nil {
+		t.Fatalf("first migrate: %v", err)
+	}
+	if err := d.Migrate(); err != nil {
+		t.Fatalf("second migrate (duplicate column should be ignored): %v", err)
 	}
 }

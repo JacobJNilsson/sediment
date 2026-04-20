@@ -20,7 +20,7 @@ func newTestDB(t *testing.T) *store.DB {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := db.Migrate(); err != nil {
+	if err := db.Migrate(""); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
@@ -70,7 +70,7 @@ func TestMigrate(t *testing.T) {
 	db := newTestDB(t)
 
 	// Running migrate twice should be idempotent.
-	if err := db.Migrate(); err != nil {
+	if err := db.Migrate(""); err != nil {
 		t.Fatalf("second migrate: %v", err)
 	}
 }
@@ -328,7 +328,7 @@ func TestListByStateOnClosedDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if err := db.Migrate(); err != nil {
+	if err := db.Migrate(""); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	db.Close()
@@ -349,7 +349,7 @@ func TestListAllOnClosedDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if err := db.Migrate(); err != nil {
+	if err := db.Migrate(""); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	db.Close()
@@ -370,7 +370,7 @@ func TestInsertOnClosedDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if err := db.Migrate(); err != nil {
+	if err := db.Migrate(""); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	db.Close()
@@ -392,7 +392,7 @@ func TestUpdateOnClosedDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if err := db.Migrate(); err != nil {
+	if err := db.Migrate(""); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	db.Close()
@@ -414,7 +414,7 @@ func TestDeleteOnClosedDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if err := db.Migrate(); err != nil {
+	if err := db.Migrate(""); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	db.Close()
@@ -435,7 +435,7 @@ func TestGetOnClosedDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if err := db.Migrate(); err != nil {
+	if err := db.Migrate(""); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	db.Close()
@@ -458,7 +458,7 @@ func TestMigrateOnClosedDB(t *testing.T) {
 	}
 	db.Close()
 
-	err = db.Migrate()
+	err = db.Migrate("")
 	if err == nil {
 		t.Fatal("expected error on closed db")
 	}
@@ -475,7 +475,7 @@ func TestMetaGetSetRoundTrip(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
-	if err := db.Migrate(); err != nil {
+	if err := db.Migrate(""); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
@@ -515,10 +515,10 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if err := db.Migrate(); err != nil {
+	if err := db.Migrate(""); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	if err := db.Migrate(); err != nil {
+	if err := db.Migrate(""); err != nil {
 		t.Fatalf("re-migrate should be idempotent: %v", err)
 	}
 	db.Close()
@@ -531,7 +531,7 @@ func TestSetMetaError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if err := db.Migrate(); err != nil {
+	if err := db.Migrate(""); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	db.Close()
@@ -549,7 +549,7 @@ func TestGetMetaError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if err := db.Migrate(); err != nil {
+	if err := db.Migrate(""); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	db.Close()

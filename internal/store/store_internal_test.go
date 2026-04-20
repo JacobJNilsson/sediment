@@ -161,7 +161,7 @@ func TestInsertNilTagsViaDB(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer d.Close()
-	if err := d.Migrate(); err != nil {
+	if err := d.Migrate(""); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
@@ -209,7 +209,7 @@ func TestRunInTxCommit(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer d.Close()
-	if err := d.Migrate(); err != nil {
+	if err := d.Migrate(""); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
@@ -244,7 +244,7 @@ func TestRunInTxRollback(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer d.Close()
-	if err := d.Migrate(); err != nil {
+	if err := d.Migrate(""); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
@@ -301,7 +301,7 @@ func TestRunInTxCommitError(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer d.Close()
-	if err := d.Migrate(); err != nil {
+	if err := d.Migrate(""); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
@@ -336,7 +336,7 @@ func TestRunInTxMultipleOps(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer d.Close()
-	if err := d.Migrate(); err != nil {
+	if err := d.Migrate(""); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
@@ -402,7 +402,7 @@ func TestMigrateMetaSchemaError(t *testing.T) {
 	defer conn.Close()
 
 	d := &DB{exec: conn, conn: conn}
-	err = d.Migrate()
+	err = d.Migrate("")
 	if err == nil {
 		t.Fatal("expected error on corrupt db")
 	}

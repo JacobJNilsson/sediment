@@ -220,7 +220,7 @@ type erodeTransition struct {
 
 // storeI is the subset of store.DB that commands need.
 type storeI interface {
-	Migrate() error
+	Migrate(dataDir string) error
 	ListAll() ([]*model.Memory, error)
 	ListByState(state model.State) ([]*model.Memory, error)
 	Get(id string) (*model.Memory, error)
@@ -353,9 +353,10 @@ func openAndMigrate(args []string) (db storeI, absPath string, err error) {
 	}
 	db, err = openFunc(absPath)
 	if err != nil {
-		return nil, "", fmt.Errorf("open database: %w", err)
+		return nil, "", err
 	}
-	if err = db.Migrate(); err != nil {
+	dataDir := filepath.Dir(absPath)
+	if err = db.Migrate(dataDir); err != nil {
 		db.Close()
 		return nil, "", fmt.Errorf("migrate: %w", err)
 	}

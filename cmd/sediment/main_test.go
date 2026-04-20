@@ -164,6 +164,18 @@ func TestRunHelp(t *testing.T) {
 	}
 }
 
+func TestRunVersion(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	err := run([]string{"--version"}, &buf)
+	if err != nil {
+		t.Fatalf("run(--version): %v", err)
+	}
+	if !strings.Contains(buf.String(), version) {
+		t.Errorf("run(--version) = %q, want version %q", buf.String(), version)
+	}
+}
+
 func TestRunCommandHelp(t *testing.T) {
 	t.Parallel()
 	cmds := []string{"init", "status", "deposit", "strata", "excavate", "erode", "compact", "resolve", "setup"}

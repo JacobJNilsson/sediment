@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3" // SQLite driver
+	_ "modernc.org/sqlite" // pure-Go SQLite driver
 
 	"github.com/jacobjnilsson/sediment/internal/migrate"
 	"github.com/jacobjnilsson/sediment/internal/model"
@@ -36,7 +36,7 @@ var sqlOpen = sql.Open
 // Open creates or opens a SQLite database at the given path.
 // It verifies connectivity immediately with a ping.
 func Open(path string) (*DB, error) {
-	sqlDB, err := sqlOpen("sqlite3", path+"?_journal_mode=WAL&_foreign_keys=on")
+	sqlDB, err := sqlOpen("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)")
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}

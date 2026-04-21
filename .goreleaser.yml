@@ -1,0 +1,25 @@
+version: 2
+
+builds:
+  - main: ./cmd/sediment
+    binary: sediment
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+changelog:
+  use: github-native
+
+release:
+  github:
+    owner: JacobJNilsson
+    name: sediment

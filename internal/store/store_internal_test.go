@@ -15,7 +15,7 @@ import (
 func testDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dir := t.TempDir()
-	db, err := sql.Open("sqlite3", filepath.Join(dir, "test.db"))
+	db, err := sql.Open("sqlite", filepath.Join(dir, "test.db"))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -395,7 +395,7 @@ func TestMigrateMetaSchemaError(t *testing.T) {
 	rawDB.WriteString("not a database")
 	rawDB.Close()
 
-	conn, err := sql.Open("sqlite3", dbPath)
+	conn, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

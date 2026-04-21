@@ -6,14 +6,14 @@ import (
 	"path/filepath"
 	"testing"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 
 	"github.com/jacobjnilsson/sediment/internal/migrate"
 )
 
 func openDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "test.db"))
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

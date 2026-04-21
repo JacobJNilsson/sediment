@@ -36,7 +36,7 @@ jobs:
 
       - name: Enforce 100% coverage
         run: |
-          UNCOVERED=$(go tool cover -func=coverage.out | grep -v '100.0%' | grep -v '^total:' | grep -v '\.go:[0-9]*:	main	' || true)
+          UNCOVERED=$(go tool cover -func=coverage.out | grep -v '100.0%' | grep -v '^total:' | grep -v '\.go:[0-9]*:.*	main	' || true)
           if [ -n "$UNCOVERED" ]; then
             echo "Functions not at 100% coverage:"
             echo "$UNCOVERED"

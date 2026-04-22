@@ -29,7 +29,7 @@ rm -f coverage.out
 
 echo "==> plugin typecheck"
 if command -v bun >/dev/null 2>&1 && [ -f .opencode/tsconfig.json ]; then
-    (cd .opencode && bun tsc --noEmit)
+    (cd .opencode &&     bun run typecheck)
 else
     echo "    (skipped: bun not installed or tsconfig missing)"
 fi

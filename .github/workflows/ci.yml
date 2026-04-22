@@ -53,7 +53,7 @@ jobs:
         working-directory: .opencode
 
       - name: Plugin typecheck
-        run: bun tsc --noEmit
+        run: bun run typecheck
         working-directory: .opencode
 
       - name: Plugin tests

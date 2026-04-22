@@ -1,5 +1,4 @@
-import type { Plugin } from "@opencode-ai/plugin"
-import type { Part } from "@opencode-ai/sdk"
+import type { Plugin, Hooks } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
 
 const DEPOSIT_INSTRUCTION = `## Memory Protocol
@@ -32,11 +31,13 @@ export const SedimentPlugin: Plugin = async ({ $, directory }) => {
   }
 
   return {
-    "chat.message": async (_input, output) => {
-      output.parts.push({
-        type: "text",
-        text: DEPOSIT_INSTRUCTION,
-      } as Part)
+    "experimental.chat.system.transform": async (_input, output) => {
+      output.system.push(DEPOSIT_INSTRUCTION)
+      if (activeMemories) {
+        output.system.push(
+          `## Sediment Memories (persistent across sessions)\n${activeMemories}`,
+        )
+      }
     },
 
     "experimental.session.compacting": async (_input, output) => {
@@ -124,5 +125,5 @@ export const SedimentPlugin: Plugin = async ({ $, directory }) => {
         },
       }),
     },
-  }
+  } satisfies Hooks
 }

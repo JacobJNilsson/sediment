@@ -1,6 +1,9 @@
-import { describe, test, expect } from "bun:test"
+import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { $ } from "bun"
-import { unlinkSync } from "fs"
+import { unlinkSync, mkdtempSync } from "fs"
+import { tmpdir } from "os"
+import { join } from "path"
+import { SedimentPlugin } from "./sediment"
 
 function cleanup(path: string) {
   try {
@@ -102,6 +105,60 @@ describe("shell helper: array interpolation", () => {
     expect(parsed.tags).toContain("bar")
 
     cleanup(dbPath)
+  })
+})
+
+describe("plugin hooks", () => {
+  let tmpDir: string
+  let dbPath: string
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "sediment-plugin-test-"))
+    dbPath = join(tmpDir, ".sediment.db")
+  })
+
+  afterEach(() => {
+    cleanup(dbPath)
+  })
+
+  async function makePlugin() {
+    // Minimal stub for the plugin context
+    const pluginCtx = {
+      $,
+      directory: tmpDir,
+    } as any
+    return SedimentPlugin(pluginCtx)
+  }
+
+  test("registers experimental.chat.system.transform hook", async () => {
+    const hooks = await makePlugin()
+    expect(typeof hooks["experimental.chat.system.transform"]).toBe("function")
+  })
+
+  test("does NOT register chat.message hook", async () => {
+    const hooks = await makePlugin()
+    expect(hooks["chat.message"]).toBeUndefined()
+  })
+
+  test("system transform injects deposit instruction into system array", async () => {
+    const hooks = await makePlugin()
+    const systemTransform = hooks["experimental.chat.system.transform"] as Function
+    const output = { system: [] as string[] }
+    await systemTransform({}, output)
+    expect(output.system.some((s: string) => s.includes("sediment_deposit"))).toBe(true)
+  })
+
+  test("system transform injects active memories when db has entries", async () => {
+    // Deposit a memory first
+    await $`sediment deposit --content "test memory fact" --hardness 7 --db ${dbPath}`.quiet()
+
+    const hooks = await makePlugin()
+    const systemTransform = hooks["experimental.chat.system.transform"] as Function
+    const output = { system: [] as string[] }
+    await systemTransform({}, output)
+
+    const combined = output.system.join("\n")
+    expect(combined).toContain("test memory fact")
   })
 })
 

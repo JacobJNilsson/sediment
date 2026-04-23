@@ -22,11 +22,7 @@ Accessing a memory (excavating it) boosts its confidence and can reverse decay.
 
 ## Install
 
-```sh
-brew install jacobjnilsson/tap/sediment   # or download from GitHub releases
-```
-
-Then set up a project:
+Download the latest binary from [GitHub releases](https://github.com/JacobJNilsson/sediment/releases), then set up a project:
 
 ```sh
 cd your-project
@@ -51,10 +47,10 @@ All commands accept `--db <path>` to override the default `.sediment.db`. All ou
 
 ## OpenCode plugin
 
-The plugin runs automatically when OpenCode opens the repo. On each session it:
+The `sediment setup` wizard installs the plugin globally to `~/.config/opencode/plugins/sediment.ts`. It runs in every OpenCode session but only activates when a `.sediment.db` exists in the working directory, so repos that haven't been set up are unaffected.
 
-1. Runs `erode --auto` to apply decay since last session.
+On each session in a set-up repo, the plugin:
+
+1. Runs `erode --auto` to apply decay since the last session.
 2. Loads active and dormant memories into the system prompt.
 3. Instructs the agent to deposit new reusable knowledge via the `sediment_deposit` tool.
-
-> **Note:** The plugin currently lives in `.opencode/plugins/` and only activates inside this repo. Global installation (so it runs in every project) is [tracked in #17](https://github.com/JacobJNilsson/sediment/issues/17).

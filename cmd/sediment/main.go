@@ -91,6 +91,152 @@ sediment erode
 - **The .sediment.db file should be gitignored.** It contains local agent context, not project source.
 `
 
+const pluginContent = `import type { Plugin, Hooks } from "@opencode-ai/plugin"
+import { tool } from "@opencode-ai/plugin"
+import { existsSync } from "fs"
+
+const DEPOSIT_INSTRUCTION = ` + "`" + `## Memory Protocol
+You have persistent memory via the ` + "\\`" + `sediment_deposit` + "\\`" + ` tool. After each response,
+consider: did I learn something about the user, project, or codebase worth
+remembering in a future session? If yes, call sediment_deposit with:
+- content: concise single-statement fact
+- hardness: 1-3 for ephemeral, 4-6 for decisions/preferences, 7-10 for conventions/patterns
+- tags: relevant categories
+- supersedes_id: ID of contradicted memory (if applicable)
+
+Most turns require zero deposits. Only deposit genuinely new, reusable knowledge.
+Current memories are available in context — check for contradictions before depositing.` + "`" + `
+
+export const SedimentPlugin: Plugin = async ({ $, directory }) => {
+  const dbPath = ` + "`${directory}/.sediment.db`" + `
+
+  if (!existsSync(dbPath)) {
+    return {} satisfies Hooks
+  }
+
+  const sediment = async (args: string[]) => {
+    const result = await $` + "`sediment ${args} --db ${dbPath}`" + `.quiet()
+    return result.text().trim()
+  }
+
+  let activeMemories: string | null = null
+
+  try {
+    await sediment(["erode", "--auto"])
+    activeMemories = await sediment(["strata"])
+  } catch {
+    // sediment CLI not installed — degrade gracefully
+  }
+
+  return {
+    "experimental.chat.system.transform": async (_input, output) => {
+      output.system.push(DEPOSIT_INSTRUCTION)
+      if (activeMemories) {
+        output.system.push(
+          ` + "`## Sediment Memories (persistent across sessions)\\n${activeMemories}`" + `,
+        )
+      }
+    },
+
+    "experimental.session.compacting": async (_input, output) => {
+      try {
+        activeMemories = await sediment(["strata"])
+      } catch {
+        // fall back to cached
+      }
+      if (activeMemories) {
+        output.context.push(
+          ` + "`## Sediment Memories (persistent across sessions)\\n${activeMemories}`" + `,
+        )
+      }
+    },
+
+    tool: {
+      sediment_deposit: tool({
+        description: [
+          "Store a memory for future sessions. Use this after learning something worth",
+          "remembering about the user, project, or codebase.",
+          "",
+          "Hardness uses Mohs scale (1-10):",
+          "  1-3 (Talc-Calcite): situational, one-off comments, ephemeral context",
+          "  4-6 (Fluorite-Feldspar): decisions, preferences, architectural choices",
+          "  7-10 (Quartz-Diamond): conventions, patterns, testing approach, team rules",
+          "",
+          "Contradiction handling: if the new memory contradicts an existing one,",
+          "set supersedes_id to the ID of the old memory. The old memory will be",
+          "archived and replaced.",
+        ].join("\n"),
+        args: {
+          content: tool.schema.string(),
+          tags: tool.schema.array(tool.schema.string()).optional(),
+          hardness: tool.schema.number().min(1).max(10).optional(),
+          supersedes_id: tool.schema.string().optional(),
+        },
+        async execute(args) {
+          if (args.supersedes_id) {
+            try {
+              await sediment([
+                "resolve",
+                "--action",
+                "supersede",
+                "--id",
+                args.supersedes_id,
+                "--content",
+                args.content,
+              ])
+              return ` + "`Superseded memory ${args.supersedes_id} with: ${args.content}`" + `
+            } catch (e) {
+              return ` + "`Failed to supersede: ${e}`" + `
+            }
+          }
+
+          const depositArgs = [
+            "deposit",
+            "--content",
+            args.content,
+            "--hardness",
+            String(args.hardness ?? 5),
+          ]
+          if (args.tags?.length) {
+            depositArgs.push("--tags", args.tags.join(","))
+          }
+          try {
+            return await sediment(depositArgs)
+          } catch (e) {
+            return ` + "`Failed to deposit: ${e}`" + `
+          }
+        },
+      }),
+
+      sediment_recall: tool({
+        description:
+          "Retrieve all active and dormant memories from previous sessions. " +
+          "Use at the start of a session if memories were not auto-loaded, " +
+          "or to refresh context mid-session.",
+        args: {},
+        async execute() {
+          try {
+            return await sediment(["strata"])
+          } catch (e) {
+            return ` + "`Failed to recall: ${e}`" + `
+          }
+        },
+      }),
+    },
+  } satisfies Hooks
+}
+`
+
+const pluginDepVersion = "1.4.3"
+
+const pluginPkgJSON = `{
+  "private": true,
+  "dependencies": {
+    "@opencode-ai/plugin": "` + pluginDepVersion + `"
+  }
+}
+`
+
 const globalUsage = `sediment - AI memory lifecycle manager
 
 Memories are deposited, decay over time, get reinforced through access,
@@ -974,13 +1120,15 @@ func cmdSetup(args []string, w io.Writer) error {
 		return fmt.Errorf("setup cancelled: %w", err)
 	}
 
+	home, err := userHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve home directory: %w", err)
+	}
+
+	// Skill installation (global or workspace).
 	var skillDir string
 	switch cfg.Scope {
 	case "global":
-		home, err := userHomeDir()
-		if err != nil {
-			return fmt.Errorf("resolve home directory: %w", err)
-		}
 		skillDir = filepath.Join(home, ".agents", "skills", "sediment")
 	case "workspace":
 		skillDir = filepath.Join(".agents", "skills", "sediment")
@@ -997,6 +1145,13 @@ func cmdSetup(args []string, w io.Writer) error {
 
 	absSkillPath, _ := filepath.Abs(skillPath)
 
+	// Plugin installation (always global).
+	pluginPath, err := installPlugin(home)
+	if err != nil {
+		return err
+	}
+
+	// Database initialisation (repo-local).
 	db, absDBPath, err := openAndMigrate(args)
 	if err != nil {
 		return err
@@ -1008,6 +1163,7 @@ func cmdSetup(args []string, w io.Writer) error {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Setup complete!")
 	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  Plugin:    %s\n", pluginPath)
 	fmt.Fprintf(w, "  Skill:     %s\n", absSkillPath)
 	fmt.Fprintf(w, "  Database:  %s\n", absDBPath)
 	if gitignoreUpdated {
@@ -1016,6 +1172,71 @@ func cmdSetup(args []string, w io.Writer) error {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Start a new agent session — it will pick up your memories automatically.")
 
+	return nil
+}
+
+// installPlugin writes the OpenCode plugin and its package.json to the global
+// config directory (~/.config/opencode/). If a package.json already exists it
+// is preserved and the dependency is merged in.
+func installPlugin(home string) (string, error) {
+	configDir := filepath.Join(home, ".config", "opencode")
+	pluginDir := filepath.Join(configDir, "plugins")
+
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		return "", fmt.Errorf("create plugin directory: %w", err)
+	}
+
+	pluginPath := filepath.Join(pluginDir, "sediment.ts")
+	if err := writeFile(pluginPath, []byte(pluginContent), 0o644); err != nil {
+		return "", fmt.Errorf("write plugin file: %w", err)
+	}
+
+	if err := ensurePluginDeps(configDir, os.Stderr); err != nil {
+		return "", err
+	}
+
+	return pluginPath, nil
+}
+
+// ensurePluginDeps makes sure the OpenCode config package.json contains the
+// @opencode-ai/plugin dependency. If the file doesn't exist it is created
+// from pluginPkgJSON. If it exists the dependency is merged without
+// overwriting other entries.
+func ensurePluginDeps(configDir string, w io.Writer) error {
+	pkgPath := filepath.Join(configDir, "package.json")
+	existing, err := os.ReadFile(pkgPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("read plugin dependencies: %w", err)
+		}
+		if err := writeFile(pkgPath, []byte(pluginPkgJSON), 0o644); err != nil {
+			return fmt.Errorf("write plugin dependencies: %w", err)
+		}
+		return nil
+	}
+
+	var pkg map[string]any
+	if err := json.Unmarshal(existing, &pkg); err != nil {
+		fmt.Fprintf(w, "warning: existing package.json was malformed, replacing it\n")
+		if err := writeFile(pkgPath, []byte(pluginPkgJSON), 0o644); err != nil {
+			return fmt.Errorf("write plugin dependencies: %w", err)
+		}
+		return nil
+	}
+
+	deps, ok := pkg["dependencies"].(map[string]any)
+	if !ok {
+		deps = map[string]any{}
+		pkg["dependencies"] = deps
+	}
+	deps["@opencode-ai/plugin"] = pluginDepVersion
+
+	// json.MarshalIndent cannot fail on map[string]any with basic-type values.
+	out, _ := json.MarshalIndent(pkg, "", "  ")
+	out = append(out, '\n')
+	if err := writeFile(pkgPath, out, 0o644); err != nil {
+		return fmt.Errorf("write plugin dependencies: %w", err)
+	}
 	return nil
 }
 

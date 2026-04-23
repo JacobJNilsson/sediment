@@ -1,5 +1,6 @@
 import type { Plugin, Hooks } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
+import { existsSync } from "fs"
 
 const DEPOSIT_INSTRUCTION = `## Memory Protocol
 You have persistent memory via the \`sediment_deposit\` tool. After each response,
@@ -16,6 +17,10 @@ Current memories are available in context — check for contradictions before de
 export const SedimentPlugin: Plugin = async ({ $, directory }) => {
   const dbPath = `${directory}/.sediment.db`
 
+  if (!existsSync(dbPath)) {
+    return {} satisfies Hooks
+  }
+
   const sediment = async (args: string[]) => {
     const result = await $`sediment ${args} --db ${dbPath}`.quiet()
     return result.text().trim()
@@ -27,7 +32,7 @@ export const SedimentPlugin: Plugin = async ({ $, directory }) => {
     await sediment(["erode", "--auto"])
     activeMemories = await sediment(["strata"])
   } catch {
-    // sediment not initialized or not installed
+    // sediment CLI not installed — degrade gracefully
   }
 
   return {

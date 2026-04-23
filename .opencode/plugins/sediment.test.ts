@@ -130,17 +130,31 @@ describe("plugin hooks", () => {
     return SedimentPlugin(pluginCtx)
   }
 
-  test("registers experimental.chat.system.transform hook", async () => {
+  test("returns empty hooks when no .sediment.db exists", async () => {
+    const hooks = await makePlugin()
+    expect(hooks).toEqual({})
+  })
+
+  test("registers hooks when .sediment.db exists", async () => {
+    // Create the database so the plugin activates
+    await $`sediment init --db ${dbPath}`.quiet()
+
     const hooks = await makePlugin()
     expect(typeof hooks["experimental.chat.system.transform"]).toBe("function")
+    expect(typeof hooks["experimental.session.compacting"]).toBe("function")
+    expect(hooks["tool"]).toBeDefined()
   })
 
   test("does NOT register chat.message hook", async () => {
+    await $`sediment init --db ${dbPath}`.quiet()
+
     const hooks = await makePlugin()
     expect(hooks["chat.message"]).toBeUndefined()
   })
 
   test("system transform injects deposit instruction into system array", async () => {
+    await $`sediment init --db ${dbPath}`.quiet()
+
     const hooks = await makePlugin()
     const systemTransform = hooks["experimental.chat.system.transform"] as Function
     const output = { system: [] as string[] }
@@ -149,7 +163,7 @@ describe("plugin hooks", () => {
   })
 
   test("system transform injects active memories when db has entries", async () => {
-    // Deposit a memory first
+    // Deposit a memory first (also creates the db)
     await $`sediment deposit --content "test memory fact" --hardness 7 --db ${dbPath}`.quiet()
 
     const hooks = await makePlugin()

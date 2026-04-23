@@ -2279,6 +2279,25 @@ func TestCmdSetupGlobalScope(t *testing.T) {
 		t.Error("skill file missing expected content")
 	}
 
+	// Plugin should be installed globally.
+	pluginPath := filepath.Join(dir, ".config", "opencode", "plugins", "sediment.ts")
+	pluginData, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatalf("read plugin: %v", err)
+	}
+	if !strings.Contains(string(pluginData), "SedimentPlugin") {
+		t.Error("plugin file missing expected content")
+	}
+
+	// package.json should have the plugin dependency.
+	pkgData, err := os.ReadFile(filepath.Join(dir, ".config", "opencode", "package.json"))
+	if err != nil {
+		t.Fatalf("read package.json: %v", err)
+	}
+	if !strings.Contains(string(pkgData), "@opencode-ai/plugin") {
+		t.Error("package.json missing plugin dependency")
+	}
+
 	if _, err := os.Stat(filepath.Join(dir, ".sediment.db")); os.IsNotExist(err) {
 		t.Error("database was not created")
 	}
@@ -2287,10 +2306,19 @@ func TestCmdSetupGlobalScope(t *testing.T) {
 	if !strings.Contains(string(gi), ".sediment.db") {
 		t.Error("gitignore not updated")
 	}
+
+	if !strings.Contains(output, "Plugin:") {
+		t.Error("output missing plugin path")
+	}
 }
 
 func TestCmdSetupWorkspaceScope(t *testing.T) {
 	dir := t.TempDir()
+	home := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", home)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
 	oldWd, _ := os.Getwd()
 	os.Chdir(dir)
 	t.Cleanup(func() { os.Chdir(oldWd) })
@@ -2306,9 +2334,16 @@ func TestCmdSetupWorkspaceScope(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
+	// Skill installed at workspace level.
 	skillPath := filepath.Join(dir, ".agents", "skills", "sediment", "SKILL.md")
 	if _, err := os.Stat(skillPath); os.IsNotExist(err) {
 		t.Fatal("workspace skill file not created")
+	}
+
+	// Plugin still installed globally.
+	pluginPath := filepath.Join(home, ".config", "opencode", "plugins", "sediment.ts")
+	if _, err := os.Stat(pluginPath); os.IsNotExist(err) {
+		t.Fatal("global plugin file not created")
 	}
 }
 
@@ -2373,6 +2408,11 @@ func TestCmdSetupInvalidDB(t *testing.T) {
 	defer restore()
 
 	dir := t.TempDir()
+	home := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", home)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
 	oldWd, _ := os.Getwd()
 	os.Chdir(dir)
 	t.Cleanup(func() { os.Chdir(oldWd) })
@@ -2420,6 +2460,11 @@ func TestCmdSetupGitignoreNoTrailingNewline(t *testing.T) {
 
 func TestCmdSetupSkillDirPermissionDenied(t *testing.T) {
 	dir := t.TempDir()
+	home := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", home)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
 	oldWd, _ := os.Getwd()
 	os.Chdir(dir)
 	t.Cleanup(func() { os.Chdir(oldWd) })
@@ -2442,6 +2487,11 @@ func TestCmdSetupSkillDirPermissionDenied(t *testing.T) {
 
 func TestCmdSetupWriteSkillError(t *testing.T) {
 	dir := t.TempDir()
+	home := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", home)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
 	oldWd, _ := os.Getwd()
 	os.Chdir(dir)
 	t.Cleanup(func() { os.Chdir(oldWd) })
@@ -2482,6 +2532,311 @@ func TestCmdSetupHomeDirError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "resolve home directory") {
 		t.Errorf("error = %q, want 'resolve home directory'", err)
+	}
+}
+
+func TestCmdSetupPluginMergesExistingPackageJSON(t *testing.T) {
+	dir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	// Pre-existing package.json with another dependency.
+	configDir := filepath.Join(dir, ".config", "opencode")
+	os.MkdirAll(configDir, 0o755)
+	os.WriteFile(filepath.Join(configDir, "package.json"),
+		[]byte(`{"dependencies":{"other-plugin":"2.0.0"}}`), 0o644)
+
+	restore := mockForm("opencode", "global")
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	pkgData, err := os.ReadFile(filepath.Join(configDir, "package.json"))
+	if err != nil {
+		t.Fatalf("read package.json: %v", err)
+	}
+	content := string(pkgData)
+	if !strings.Contains(content, "@opencode-ai/plugin") {
+		t.Error("package.json missing sediment plugin dependency")
+	}
+	if !strings.Contains(content, "other-plugin") {
+		t.Error("package.json lost existing dependency")
+	}
+}
+
+func TestCmdSetupPluginOverwritesMalformedPackageJSON(t *testing.T) {
+	dir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	// Malformed package.json.
+	configDir := filepath.Join(dir, ".config", "opencode")
+	os.MkdirAll(configDir, 0o755)
+	os.WriteFile(filepath.Join(configDir, "package.json"),
+		[]byte(`not json`), 0o644)
+
+	restore := mockForm("opencode", "global")
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	pkgData, err := os.ReadFile(filepath.Join(configDir, "package.json"))
+	if err != nil {
+		t.Fatalf("read package.json: %v", err)
+	}
+	if !strings.Contains(string(pkgData), "@opencode-ai/plugin") {
+		t.Error("package.json missing plugin dependency after overwrite")
+	}
+}
+
+func TestCmdSetupWritePluginError(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", home)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	restore := mockForm("opencode", "workspace")
+	defer restore()
+
+	old := writeFile
+	writeFile = func(name string, data []byte, perm os.FileMode) error {
+		if strings.HasSuffix(name, "sediment.ts") {
+			return fmt.Errorf("disk full")
+		}
+		return old(name, data, perm)
+	}
+	t.Cleanup(func() { writeFile = old })
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err == nil {
+		t.Fatal("expected write error")
+	}
+	if !strings.Contains(err.Error(), "write plugin file") {
+		t.Errorf("error = %q, want 'write plugin file'", err)
+	}
+}
+
+func TestCmdSetupPluginDirBlocked(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", home)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	// Place a regular file where the plugins directory should go.
+	configDir := filepath.Join(home, ".config", "opencode")
+	os.MkdirAll(configDir, 0o755)
+	os.WriteFile(filepath.Join(configDir, "plugins"), []byte("blocker"), 0o644)
+
+	restore := mockForm("opencode", "workspace")
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err == nil {
+		t.Fatal("expected error for blocked plugin directory")
+	}
+	if !strings.Contains(err.Error(), "create plugin directory") {
+		t.Errorf("error = %q, want 'create plugin directory'", err)
+	}
+}
+
+func TestCmdSetupPluginDepsWriteError(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", home)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	restore := mockForm("opencode", "workspace")
+	defer restore()
+
+	old := writeFile
+	writeFile = func(name string, data []byte, perm os.FileMode) error {
+		if strings.HasSuffix(name, "package.json") {
+			return fmt.Errorf("disk full")
+		}
+		return old(name, data, perm)
+	}
+	t.Cleanup(func() { writeFile = old })
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err == nil {
+		t.Fatal("expected write error for package.json")
+	}
+	if !strings.Contains(err.Error(), "write plugin dependencies") {
+		t.Errorf("error = %q, want 'write plugin dependencies'", err)
+	}
+}
+
+func TestEnsurePluginDepsMalformedWriteError(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "package.json"), []byte(`not json`), 0o644)
+
+	old := writeFile
+	writeFile = func(name string, data []byte, perm os.FileMode) error {
+		if strings.HasSuffix(name, "package.json") {
+			return fmt.Errorf("disk full")
+		}
+		return old(name, data, perm)
+	}
+	t.Cleanup(func() { writeFile = old })
+
+	var buf bytes.Buffer
+	err := ensurePluginDeps(dir, &buf)
+	if err == nil {
+		t.Fatal("expected write error")
+	}
+	if !strings.Contains(err.Error(), "write plugin dependencies") {
+		t.Errorf("error = %q, want 'write plugin dependencies'", err)
+	}
+	if !strings.Contains(buf.String(), "malformed") {
+		t.Error("expected malformed warning")
+	}
+}
+
+func TestEnsurePluginDepsMergeWriteError(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "package.json"),
+		[]byte(`{"dependencies":{"other":"1.0.0"}}`), 0o644)
+
+	old := writeFile
+	writeFile = func(name string, data []byte, perm os.FileMode) error {
+		if strings.HasSuffix(name, "package.json") {
+			return fmt.Errorf("disk full")
+		}
+		return old(name, data, perm)
+	}
+	t.Cleanup(func() { writeFile = old })
+
+	err := ensurePluginDeps(dir, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("expected write error")
+	}
+	if !strings.Contains(err.Error(), "write plugin dependencies") {
+		t.Errorf("error = %q, want 'write plugin dependencies'", err)
+	}
+}
+
+func TestEnsurePluginDepsReadError(t *testing.T) {
+	dir := t.TempDir()
+	pkgPath := filepath.Join(dir, "package.json")
+	os.MkdirAll(pkgPath, 0o755)
+
+	err := ensurePluginDeps(dir, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("expected read error")
+	}
+	if !strings.Contains(err.Error(), "read plugin dependencies") {
+		t.Errorf("error = %q, want 'read plugin dependencies'", err)
+	}
+}
+
+func TestCmdSetupPluginNoDepsKeyInPackageJSON(t *testing.T) {
+	dir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	// package.json exists but has no "dependencies" key.
+	configDir := filepath.Join(dir, ".config", "opencode")
+	os.MkdirAll(configDir, 0o755)
+	os.WriteFile(filepath.Join(configDir, "package.json"),
+		[]byte(`{"private": true}`), 0o644)
+
+	restore := mockForm("opencode", "global")
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	pkgData, _ := os.ReadFile(filepath.Join(configDir, "package.json"))
+	content := string(pkgData)
+	if !strings.Contains(content, "@opencode-ai/plugin") {
+		t.Error("package.json missing plugin dependency")
+	}
+	if !strings.Contains(content, `"private"`) {
+		t.Error("package.json lost existing keys")
+	}
+}
+
+// --- content sync tests ---
+
+func TestPluginContentMatchesSourceFile(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile("../../.opencode/plugins/sediment.ts")
+	if err != nil {
+		t.Fatalf("read plugin source file: %v", err)
+	}
+	if string(data) != pluginContent {
+		t.Errorf("pluginContent Go constant is out of sync with .opencode/plugins/sediment.ts")
+	}
+}
+
+func TestPluginPkgJSONMatchesSourceFile(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile("../../.opencode/package.json")
+	if err != nil {
+		t.Fatalf("read package.json source file: %v", err)
+	}
+
+	var source, embedded map[string]any
+	if err := json.Unmarshal(data, &source); err != nil {
+		t.Fatalf("parse source package.json: %v", err)
+	}
+	if err := json.Unmarshal([]byte(pluginPkgJSON), &embedded); err != nil {
+		t.Fatalf("parse pluginPkgJSON constant: %v", err)
+	}
+
+	// The source file may have extra dev-only fields (scripts, devDependencies)
+	// but the dependency versions and private flag must stay in sync.
+	sourceDeps, _ := json.Marshal(source["dependencies"])
+	embeddedDeps, _ := json.Marshal(embedded["dependencies"])
+	if string(sourceDeps) != string(embeddedDeps) {
+		t.Errorf("dependencies out of sync:\n  source:   %s\n  embedded: %s", sourceDeps, embeddedDeps)
+	}
+	if source["private"] != embedded["private"] {
+		t.Errorf("private field out of sync: source=%v, embedded=%v", source["private"], embedded["private"])
 	}
 }
 

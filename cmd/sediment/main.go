@@ -29,32 +29,28 @@ description: Manage persistent memory across sessions. Use this skill at the sta
 
 # Sediment - Persistent Agent Memory
 
-You have access to ` + "`sediment`" + `, a CLI tool for persistent memory across sessions.
-The database defaults to ` + "`.sediment.db`" + ` in the current working directory - one
-per repo. Run ` + "`sediment --help`" + ` for full usage.
+` + "`sediment`" + ` is a CLI for persistent memory across sessions. Each repo gets its
+own ` + "`.sediment.db`" + ` (SQLite). Memories decay over time unless reinforced by
+access, so stale knowledge fades naturally. Run ` + "`sediment --help`" + ` for full usage.
 
-## When to use this skill
+## Session start
 
-### Session start (always)
-Load relevant memories to prime your context:
+If the OpenCode plugin is active, it handles erosion and memory loading
+automatically. Otherwise, run these yourself:
 
 ` + "```sh" + `
+sediment erode --auto
 sediment strata
 ` + "```" + `
 
-If there are many memories, filter by state:
-
-` + "```sh" + `
-sediment strata --state active
-` + "```" + `
-
-Excavate specific memories you plan to use (this reinforces their confidence):
+Excavate specific memories you plan to use (reinforces their confidence):
 
 ` + "```sh" + `
 sediment excavate --id <uuid>
 ` + "```" + `
 
-### During a session
+## During a session
+
 Deposit new learnings whenever you discover something worth remembering:
 
 - User preferences (coding style, commit conventions, tools they like)
@@ -66,29 +62,19 @@ Deposit new learnings whenever you discover something worth remembering:
 sediment deposit --content "..." --tags "..." --source "session-context"
 ` + "```" + `
 
-### When facts change
-If you learn something that contradicts an existing memory, resolve it:
+If a new fact contradicts an existing memory, resolve it:
 
 ` + "```sh" + `
 sediment resolve --action update --id <uuid> --content "corrected fact"
 sediment resolve --action supersede --id <uuid> --content "new truth"
 ` + "```" + `
 
-### Periodically
-Run decay to let stale memories fade naturally:
-
-` + "```sh" + `
-sediment erode
-` + "```" + `
-
 ## Guidelines
 
-- **Do not deposit trivial or ephemeral facts.** Only store things that would be useful in a future session.
+- **Do not deposit trivial or ephemeral facts.** Only store things useful in a future session.
 - **Use meaningful tags.** They help filter and group memories later.
 - **Keep content concise.** One clear statement per memory, not paragraphs.
-- **Run erode occasionally**, not every session. Once a week or when memories accumulate.
 - **Do not dump the full strata output to the user** unless asked. Use it silently to inform your responses.
-- **The .sediment.db file should be gitignored.** It contains local agent context, not project source.
 `
 
 const pluginContent = `import type { Plugin, Hooks } from "@opencode-ai/plugin"

@@ -2802,6 +2802,17 @@ func TestCmdSetupPluginNoDepsKeyInPackageJSON(t *testing.T) {
 
 // --- content sync tests ---
 
+func TestSkillContentMatchesSourceFile(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile("../../.agents/skills/sediment/SKILL.md")
+	if err != nil {
+		t.Fatalf("read skill source file: %v", err)
+	}
+	if string(data) != skillContent {
+		t.Errorf("skillContent Go constant is out of sync with .agents/skills/sediment/SKILL.md")
+	}
+}
+
 func TestPluginContentMatchesSourceFile(t *testing.T) {
 	t.Parallel()
 	data, err := os.ReadFile("../../.opencode/plugins/sediment.ts")

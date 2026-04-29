@@ -2800,6 +2800,355 @@ func TestCmdSetupPluginNoDepsKeyInPackageJSON(t *testing.T) {
 	}
 }
 
+// --- Claude Code setup tests ---
+
+func TestCmdSetupClaudeCodeGlobalScope(t *testing.T) {
+	dir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.exe\n"), 0o644)
+
+	restore := mockForm("claude-code", "global")
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Setup complete!") {
+		t.Errorf("output missing 'Setup complete!', got: %s", output)
+	}
+	if !strings.Contains(output, "Claude Code") {
+		t.Errorf("output missing 'Claude Code', got: %s", output)
+	}
+
+	// Skill should use the Claude Code variant.
+	skillPath := filepath.Join(dir, ".agents", "skills", "sediment", "SKILL.md")
+	data, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read skill: %v", err)
+	}
+	if !strings.Contains(string(data), "allowed-tools") {
+		t.Error("Claude Code skill missing allowed-tools frontmatter")
+	}
+	if strings.Contains(string(data), "OpenCode") {
+		t.Error("Claude Code skill should not mention OpenCode")
+	}
+
+	// Plugin structure should be installed.
+	pluginDir := filepath.Join(dir, ".claude", "plugins", "sediment")
+	manifest, err := os.ReadFile(filepath.Join(pluginDir, ".claude-plugin", "plugin.json"))
+	if err != nil {
+		t.Fatalf("read plugin manifest: %v", err)
+	}
+	if !strings.Contains(string(manifest), `"sediment"`) {
+		t.Error("plugin manifest missing name")
+	}
+
+	hooksData, err := os.ReadFile(filepath.Join(pluginDir, "hooks", "hooks.json"))
+	if err != nil {
+		t.Fatalf("read hooks config: %v", err)
+	}
+	if !strings.Contains(string(hooksData), "SessionStart") {
+		t.Error("hooks config missing SessionStart")
+	}
+
+	scriptData, err := os.ReadFile(filepath.Join(pluginDir, "scripts", "session-start.sh"))
+	if err != nil {
+		t.Fatalf("read session-start script: %v", err)
+	}
+	if !strings.Contains(string(scriptData), "sediment erode") {
+		t.Error("session-start script missing erode command")
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, ".sediment.db")); os.IsNotExist(err) {
+		t.Error("database was not created")
+	}
+
+	if !strings.Contains(output, "Plugin:") {
+		t.Error("output missing plugin path")
+	}
+}
+
+func TestCmdSetupClaudeCodeWorkspaceScope(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", home)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.exe\n"), 0o644)
+
+	restore := mockForm("claude-code", "workspace")
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// Skill installed at workspace level.
+	skillPath := filepath.Join(dir, ".agents", "skills", "sediment", "SKILL.md")
+	if _, err := os.Stat(skillPath); os.IsNotExist(err) {
+		t.Fatal("workspace skill file not created")
+	}
+
+	// Plugin installed at workspace level.
+	pluginDir := filepath.Join(dir, ".claude", "plugins", "sediment")
+	if _, err := os.Stat(filepath.Join(pluginDir, "hooks", "hooks.json")); os.IsNotExist(err) {
+		t.Fatal("workspace hooks config not created")
+	}
+	if _, err := os.Stat(filepath.Join(pluginDir, "scripts", "session-start.sh")); os.IsNotExist(err) {
+		t.Fatal("workspace session-start script not created")
+	}
+}
+
+func TestCmdSetupClaudeCodeNoOpenCodeArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	restore := mockForm("claude-code", "global")
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// OpenCode artifacts should NOT be created.
+	openCodePlugin := filepath.Join(dir, ".config", "opencode", "plugins", "sediment.ts")
+	if _, err := os.Stat(openCodePlugin); !os.IsNotExist(err) {
+		t.Error("Claude Code setup should not create OpenCode plugin")
+	}
+	openCodePkg := filepath.Join(dir, ".config", "opencode", "package.json")
+	if _, err := os.Stat(openCodePkg); !os.IsNotExist(err) {
+		t.Error("Claude Code setup should not create OpenCode package.json")
+	}
+}
+
+func TestCmdSetupClaudeCodePluginDirBlocked(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", home)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	// Place a regular file where the plugin directory should go.
+	os.MkdirAll(filepath.Join(dir, ".claude", "plugins"), 0o755)
+	os.WriteFile(filepath.Join(dir, ".claude", "plugins", "sediment"), []byte("blocker"), 0o644)
+
+	restore := mockForm("claude-code", "workspace")
+	defer restore()
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err == nil {
+		t.Fatal("expected error for blocked plugin directory")
+	}
+	if !strings.Contains(err.Error(), "create claude code plugin directory") {
+		t.Errorf("error = %q, want 'create claude code plugin directory'", err)
+	}
+}
+
+func TestCmdSetupClaudeCodeWriteManifestError(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", home)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	restore := mockForm("claude-code", "workspace")
+	defer restore()
+
+	old := writeFile
+	writeFile = func(name string, data []byte, perm os.FileMode) error {
+		if strings.HasSuffix(name, "plugin.json") {
+			return fmt.Errorf("disk full")
+		}
+		return old(name, data, perm)
+	}
+	t.Cleanup(func() { writeFile = old })
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err == nil {
+		t.Fatal("expected write error")
+	}
+	if !strings.Contains(err.Error(), "write claude code plugin manifest") {
+		t.Errorf("error = %q, want 'write claude code plugin manifest'", err)
+	}
+}
+
+func TestCmdSetupClaudeCodeWriteHooksError(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", home)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	restore := mockForm("claude-code", "workspace")
+	defer restore()
+
+	old := writeFile
+	writeFile = func(name string, data []byte, perm os.FileMode) error {
+		if strings.HasSuffix(name, "hooks.json") {
+			return fmt.Errorf("disk full")
+		}
+		return old(name, data, perm)
+	}
+	t.Cleanup(func() { writeFile = old })
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err == nil {
+		t.Fatal("expected write error")
+	}
+	if !strings.Contains(err.Error(), "write claude code hooks config") {
+		t.Errorf("error = %q, want 'write claude code hooks config'", err)
+	}
+}
+
+func TestCmdSetupClaudeCodeWriteScriptError(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", home)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	restore := mockForm("claude-code", "workspace")
+	defer restore()
+
+	old := writeFile
+	writeFile = func(name string, data []byte, perm os.FileMode) error {
+		if strings.HasSuffix(name, "session-start.sh") {
+			return fmt.Errorf("disk full")
+		}
+		return old(name, data, perm)
+	}
+	t.Cleanup(func() { writeFile = old })
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err == nil {
+		t.Fatal("expected write error")
+	}
+	if !strings.Contains(err.Error(), "write claude code session start script") {
+		t.Errorf("error = %q, want 'write claude code session start script'", err)
+	}
+}
+
+func TestCmdSetupClaudeCodeWriteSkillError(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", home)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	restore := mockForm("claude-code", "workspace")
+	defer restore()
+
+	old := writeFile
+	writeFile = func(name string, data []byte, perm os.FileMode) error {
+		if strings.HasSuffix(name, "SKILL.md") {
+			return fmt.Errorf("disk full")
+		}
+		return old(name, data, perm)
+	}
+	t.Cleanup(func() { writeFile = old })
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err == nil {
+		t.Fatal("expected write error")
+	}
+	if !strings.Contains(err.Error(), "write skill file") {
+		t.Errorf("error = %q, want 'write skill file'", err)
+	}
+}
+
+func TestCmdSetupClaudeCodeInvalidDB(t *testing.T) {
+	restore := mockForm("claude-code", "workspace")
+	defer restore()
+
+	dir := t.TempDir()
+	home := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", home)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	oldWd, _ := os.Getwd()
+	os.Chdir(dir)
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	var buf bytes.Buffer
+	err := cmdSetup([]string{"--db", "/nonexistent/path/test.db"}, &buf)
+	if err == nil {
+		t.Fatal("expected error for invalid db path")
+	}
+	if !strings.Contains(err.Error(), "open database") {
+		t.Errorf("error = %q, want 'open database'", err)
+	}
+}
+
+func TestCmdSetupUnknownSystem(t *testing.T) {
+	restore := mockForm("bogus-system", "global")
+	defer restore()
+
+	old := userHomeDir
+	userHomeDir = func() (string, error) { return t.TempDir(), nil }
+	t.Cleanup(func() { userHomeDir = old })
+
+	var buf bytes.Buffer
+	err := cmdSetup(nil, &buf)
+	if err == nil {
+		t.Fatal("expected error for unknown system")
+	}
+	if !strings.Contains(err.Error(), "unknown system") {
+		t.Errorf("error = %q, want 'unknown system'", err)
+	}
+}
+
 // --- content sync tests ---
 
 func TestSkillContentMatchesSourceFile(t *testing.T) {
@@ -2810,6 +3159,50 @@ func TestSkillContentMatchesSourceFile(t *testing.T) {
 	}
 	if string(data) != skillContent {
 		t.Errorf("skillContent Go constant is out of sync with .agents/skills/sediment/SKILL.md")
+	}
+}
+
+func TestClaudeCodeSkillContentMatchesSourceFile(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile("../../claude-code-plugin/skills/sediment/SKILL.md")
+	if err != nil {
+		t.Fatalf("read Claude Code skill source file: %v", err)
+	}
+	if string(data) != claudeCodeSkillContent {
+		t.Errorf("claudeCodeSkillContent Go constant is out of sync with claude-code-plugin/skills/sediment/SKILL.md")
+	}
+}
+
+func TestClaudeCodeSessionStartScriptMatchesSourceFile(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile("../../claude-code-plugin/scripts/session-start.sh")
+	if err != nil {
+		t.Fatalf("read session-start script source file: %v", err)
+	}
+	if string(data) != claudeCodeSessionStartScript {
+		t.Errorf("claudeCodeSessionStartScript Go constant is out of sync with claude-code-plugin/scripts/session-start.sh")
+	}
+}
+
+func TestClaudeCodeHooksJSONMatchesSourceFile(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile("../../claude-code-plugin/hooks/hooks.json")
+	if err != nil {
+		t.Fatalf("read hooks.json source file: %v", err)
+	}
+	if string(data) != claudeCodeHooksJSON {
+		t.Errorf("claudeCodeHooksJSON Go constant is out of sync with claude-code-plugin/hooks/hooks.json")
+	}
+}
+
+func TestClaudeCodePluginJSONMatchesSourceFile(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile("../../claude-code-plugin/.claude-plugin/plugin.json")
+	if err != nil {
+		t.Fatalf("read plugin.json source file: %v", err)
+	}
+	if string(data) != claudeCodePluginJSON {
+		t.Errorf("claudeCodePluginJSON Go constant is out of sync with claude-code-plugin/.claude-plugin/plugin.json")
 	}
 }
 

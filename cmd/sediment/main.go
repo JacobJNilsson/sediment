@@ -77,6 +77,141 @@ sediment resolve --action supersede --id <uuid> --content "new truth"
 - **Do not dump the full strata output to the user** unless asked. Use it silently to inform your responses.
 `
 
+const claudeCodeSkillContent = `---
+name: sediment
+description: Manage persistent memory across sessions. Use this skill at the start of every session to load context, and whenever you learn something worth remembering about the user, project, or codebase. Also use it when facts contradict what you previously stored.
+allowed-tools: Bash(sediment *)
+---
+
+# Sediment - Persistent Agent Memory
+
+` + "`sediment`" + ` is a CLI for persistent memory across sessions. Each repo gets its
+own ` + "`.sediment.db`" + ` (SQLite). Memories decay over time unless reinforced by
+access, so stale knowledge fades naturally. Run ` + "`sediment --help`" + ` for full usage.
+
+## Session start
+
+If the plugin hooks are active, erosion and memory loading happen
+automatically. Otherwise, run these yourself:
+
+` + "```sh" + `
+sediment erode --auto
+sediment strata
+` + "```" + `
+
+Excavate specific memories you plan to use (reinforces their confidence):
+
+` + "```sh" + `
+sediment excavate --id <uuid>
+` + "```" + `
+
+## During a session
+
+Deposit new learnings whenever you discover something worth remembering:
+
+- User preferences (coding style, commit conventions, tools they like)
+- Project facts (architecture decisions, file layout, key dependencies)
+- Identity info (names, GitHub handles, workspace paths)
+- Codebase patterns (how tests are structured, naming conventions)
+
+` + "```sh" + `
+sediment deposit --content "..." --tags "..." --source "session-context"
+` + "```" + `
+
+If a new fact contradicts an existing memory, resolve it:
+
+` + "```sh" + `
+sediment resolve --action update --id <uuid> --content "corrected fact"
+sediment resolve --action supersede --id <uuid> --content "new truth"
+` + "```" + `
+
+## Guidelines
+
+- **Do not deposit trivial or ephemeral facts.** Only store things useful in a future session.
+- **Use meaningful tags.** They help filter and group memories later.
+- **Keep content concise.** One clear statement per memory, not paragraphs.
+- **Do not dump the full strata output to the user** unless asked. Use it silently to inform your responses.
+`
+
+const claudeCodeSessionStartScript = `#!/usr/bin/env bash
+set -euo pipefail
+
+DB_PATH="$CLAUDE_PROJECT_DIR/.sediment.db"
+
+if [ ! -f "$DB_PATH" ]; then
+  exit 0
+fi
+
+sediment erode --auto --db "$DB_PATH" >/dev/null 2>&1 || true
+
+MEMORIES=$(sediment strata --db "$DB_PATH" 2>/dev/null) || exit 0
+
+if [ "$MEMORIES" = "null" ] || [ -z "$MEMORIES" ]; then
+  exit 0
+fi
+
+CONTEXT="## Sediment Memories (persistent across sessions)
+$MEMORIES
+
+## Memory Protocol
+You have persistent memory via the sediment CLI. After each response,
+consider: did I learn something about the user, project, or codebase worth
+remembering in a future session? If yes, deposit it:
+
+sediment deposit --content \"...\" --hardness <1-10> --tags \"...\" --db $DB_PATH
+
+Hardness uses the Mohs scale (1-10):
+  1-3 (Talc-Calcite): situational, one-off comments, ephemeral context
+  4-6 (Fluorite-Feldspar): decisions, preferences, architectural choices
+  7-10 (Quartz-Diamond): conventions, patterns, testing approach, team rules
+
+If a new fact contradicts an existing memory, use:
+sediment resolve --action supersede --id <uuid> --content \"...\" --db $DB_PATH
+
+Most turns require zero deposits. Only deposit genuinely new, reusable knowledge."
+
+ESCAPED=$(printf '%s' "$CONTEXT" | awk '
+  BEGIN { ORS="" }
+  {
+    gsub(/\\/, "\\\\")
+    gsub(/"/, "\\\"")
+    gsub(/\t/, "\\t")
+    if (NR > 1) printf "\\n"
+    print
+  }
+')
+
+printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}' "$ESCAPED"
+`
+
+const claudeCodeHooksJSON = `{
+  "description": "Sediment memory lifecycle hooks — erode and inject memories at session start",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/session-start.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
+`
+
+const claudeCodePluginJSON = `{
+  "name": "sediment",
+  "version": "0.1.0",
+  "description": "Persistent AI agent memory with natural decay. Memories are deposited, decay over time, get reinforced through access, and resolved when contradictory.",
+  "repository": "https://github.com/JacobJNilsson/sediment",
+  "license": "MIT",
+  "keywords": ["memory", "agent", "persistence", "context"]
+}
+`
+
 const pluginContent = `import type { Plugin, Hooks } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
 import { existsSync } from "fs"
@@ -1082,6 +1217,7 @@ var runSetupForm = func() (*setupConfig, error) {
 				Title("Which AI agent system do you use?").
 				Options(
 					huh.NewOption("OpenCode", "opencode"),
+					huh.NewOption("Claude Code", "claude-code"),
 				).
 				Value(&system),
 
@@ -1111,33 +1247,27 @@ func cmdSetup(args []string, w io.Writer) error {
 		return fmt.Errorf("resolve home directory: %w", err)
 	}
 
-	// Skill installation (global or workspace).
-	var skillDir string
-	switch cfg.Scope {
-	case "global":
-		skillDir = filepath.Join(home, ".agents", "skills", "sediment")
-	case "workspace":
-		skillDir = filepath.Join(".agents", "skills", "sediment")
+	switch cfg.System {
+	case "opencode":
+		return setupOpenCode(cfg, args, home, w)
+	case "claude-code":
+		return setupClaudeCode(cfg, args, home, w)
+	default:
+		return fmt.Errorf("unknown system: %s", cfg.System)
 	}
+}
 
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
-		return fmt.Errorf("create skill directory: %w", err)
-	}
-
-	skillPath := filepath.Join(skillDir, "SKILL.md")
-	if err := writeFile(skillPath, []byte(skillContent), 0o644); err != nil {
-		return fmt.Errorf("write skill file: %w", err)
-	}
-
-	absSkillPath, _ := filepath.Abs(skillPath)
-
-	// Plugin installation (always global).
-	pluginPath, err := installPlugin(home)
+func setupOpenCode(cfg *setupConfig, args []string, home string, w io.Writer) error {
+	absSkillPath, err := installSkill(cfg.Scope, home, skillContent)
 	if err != nil {
 		return err
 	}
 
-	// Database initialisation (repo-local).
+	pluginPath, err := installOpenCodePlugin(home)
+	if err != nil {
+		return err
+	}
+
 	db, absDBPath, err := openAndMigrate(args)
 	if err != nil {
 		return err
@@ -1161,10 +1291,105 @@ func cmdSetup(args []string, w io.Writer) error {
 	return nil
 }
 
-// installPlugin writes the OpenCode plugin and its package.json to the global
-// config directory (~/.config/opencode/). If a package.json already exists it
-// is preserved and the dependency is merged in.
-func installPlugin(home string) (string, error) {
+func setupClaudeCode(cfg *setupConfig, args []string, home string, w io.Writer) error {
+	absSkillPath, err := installSkill(cfg.Scope, home, claudeCodeSkillContent)
+	if err != nil {
+		return err
+	}
+
+	hooksPath, err := installClaudeCodeHooks(cfg.Scope, home)
+	if err != nil {
+		return err
+	}
+
+	db, absDBPath, err := openAndMigrate(args)
+	if err != nil {
+		return err
+	}
+	db.Close()
+
+	gitignoreUpdated := ensureGitignore()
+
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Setup complete!")
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  Plugin:    %s\n", hooksPath)
+	fmt.Fprintf(w, "  Skill:     %s\n", absSkillPath)
+	fmt.Fprintf(w, "  Database:  %s\n", absDBPath)
+	if gitignoreUpdated {
+		fmt.Fprintln(w, "  Gitignore: updated (.sediment.db added)")
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Start a new Claude Code session — it will pick up your memories automatically.")
+
+	return nil
+}
+
+// installSkill writes the SKILL.md to the chosen scope directory and returns
+// the absolute path.
+func installSkill(scope, home, content string) (string, error) {
+	var skillDir string
+	switch scope {
+	case "global":
+		skillDir = filepath.Join(home, ".agents", "skills", "sediment")
+	case "workspace":
+		skillDir = filepath.Join(".agents", "skills", "sediment")
+	}
+
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		return "", fmt.Errorf("create skill directory: %w", err)
+	}
+
+	skillPath := filepath.Join(skillDir, "SKILL.md")
+	if err := writeFile(skillPath, []byte(content), 0o644); err != nil {
+		return "", fmt.Errorf("write skill file: %w", err)
+	}
+
+	absPath, _ := filepath.Abs(skillPath)
+	return absPath, nil
+}
+
+// installClaudeCodeHooks writes the Claude Code plugin structure
+// (plugin.json, hooks.json, session-start script) to the appropriate
+// location. For global scope it goes under ~/.claude/plugins/sediment/,
+// for workspace scope under .claude/plugins/sediment/.
+func installClaudeCodeHooks(scope, home string) (string, error) {
+	var pluginDir string
+	switch scope {
+	case "global":
+		pluginDir = filepath.Join(home, ".claude", "plugins", "sediment")
+	case "workspace":
+		pluginDir = filepath.Join(".claude", "plugins", "sediment")
+	}
+
+	metaDir := filepath.Join(pluginDir, ".claude-plugin")
+	hooksDir := filepath.Join(pluginDir, "hooks")
+	scriptsDir := filepath.Join(pluginDir, "scripts")
+
+	for _, dir := range []string{metaDir, hooksDir, scriptsDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return "", fmt.Errorf("create claude code plugin directory: %w", err)
+		}
+	}
+
+	if err := writeFile(filepath.Join(metaDir, "plugin.json"), []byte(claudeCodePluginJSON), 0o644); err != nil {
+		return "", fmt.Errorf("write claude code plugin manifest: %w", err)
+	}
+	if err := writeFile(filepath.Join(hooksDir, "hooks.json"), []byte(claudeCodeHooksJSON), 0o644); err != nil {
+		return "", fmt.Errorf("write claude code hooks config: %w", err)
+	}
+	if err := writeFile(filepath.Join(scriptsDir, "session-start.sh"), []byte(claudeCodeSessionStartScript), 0o755); err != nil {
+		return "", fmt.Errorf("write claude code session start script: %w", err)
+	}
+
+	absPath, _ := filepath.Abs(pluginDir)
+	return absPath, nil
+}
+
+// installOpenCodePlugin writes the OpenCode plugin and its package.json to
+// the global config directory (~/.config/opencode/). If a package.json
+// already exists it is preserved and the dependency is merged in.
+func installOpenCodePlugin(home string) (string, error) {
 	configDir := filepath.Join(home, ".config", "opencode")
 	pluginDir := filepath.Join(configDir, "plugins")
 

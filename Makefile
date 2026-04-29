@@ -16,7 +16,7 @@ coverage:
 	@go tool cover -func=coverage.out | while IFS= read -r line; do \
 		echo "$$line"; \
 	done
-	@uncovered=$$(go tool cover -func=coverage.out | grep -v '100.0%' | grep -v '^total:' | grep -v '\.go:[0-9]*:	main	'); \
+	@uncovered=$$(go tool cover -func=coverage.out | grep -v '100.0%' | grep -v '^total:' | grep -v '	main	'); \
 	if [ -n "$$uncovered" ]; then \
 		echo ""; \
 		echo "FAIL: the following functions are not at 100% coverage:"; \

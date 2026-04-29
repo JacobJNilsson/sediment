@@ -1,0 +1,8 @@
+{
+  "name": "sediment",
+  "version": "0.1.0",
+  "description": "Persistent AI agent memory with natural decay. Memories are deposited, decay over time, get reinforced through access, and resolved when contradictory.",
+  "repository": "https://github.com/JacobJNilsson/sediment",
+  "license": "MIT",
+  "keywords": ["memory", "agent", "persistence", "context"]
+}

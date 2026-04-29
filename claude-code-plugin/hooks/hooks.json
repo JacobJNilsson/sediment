@@ -1,0 +1,16 @@
+{
+  "description": "Sediment memory lifecycle hooks — erode and inject memories at session start",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/session-start.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

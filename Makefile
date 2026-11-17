@@ -1,4 +1,9 @@
-.PHONY: all fmt lint test coverage build check clean
+.PHONY: all fmt lint antislop antislop-all test coverage build check clean
+
+ANTISLOP := go run github.com/JacobJNilsson/anti-slop-go/cmd/antislop@v1.4.1
+# A rule joins this list when `make antislop-all` reports zero findings for it.
+# The goal is to enforce every rule.
+ANTISLOP_ENFORCED := -nolaundering -noerrorassert -noreflect -noadhoctypeswitch -noanyreturn -justifypanic -nointerfacereturn -separategotwant
 
 all: check build
 
@@ -7,6 +12,12 @@ fmt:
 
 lint:
 	go vet ./...
+
+antislop:
+	$(ANTISLOP) $(ANTISLOP_ENFORCED) ./...
+
+antislop-all:
+	-$(ANTISLOP) ./...
 
 test:
 	go test -race -count=1 ./...
@@ -29,7 +40,7 @@ coverage:
 build:
 	go build -o sediment ./cmd/sediment
 
-check: fmt lint coverage
+check: fmt lint antislop coverage
 
 clean:
 	rm -f sediment coverage.out coverage.html

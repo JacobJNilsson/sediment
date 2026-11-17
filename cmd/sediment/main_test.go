@@ -90,33 +90,18 @@ func (m *mockStore) SetMeta(key, value string) error {
 	return nil
 }
 
-func setOpenFunc(fn func(string) (storeI, error)) func() {
-	old := openFunc
-	openFunc = fn
-	return func() { openFunc = old }
-}
+func setOpenFunc(a *app, fn func(string) (storeI, error)) { a.openFunc = fn }
 
-func setAbsFunc(fn func(string) (string, error)) func() {
-	old := absFunc
-	absFunc = fn
-	return func() { absFunc = old }
-}
+func setAbsFunc(a *app, fn func(string) (string, error)) { a.absFunc = fn }
 
-func setUUID(id string) func() {
-	old := newUUID
-	newUUID = func() string { return id }
-	return func() { newUUID = old }
-}
+func setUUID(a *app, id string) { a.newUUID = func() string { return id } }
 
-func setTimeNow(t time.Time) func() {
-	old := timeNow
-	timeNow = func() time.Time { return t }
-	return func() { timeNow = old }
-}
+func setTimeNow(a *app, t time.Time) { a.timeNow = func() time.Time { return t } }
 
 // --- run / routing tests ---
 
 func TestRunNoArgsWithDB(t *testing.T) {
+	a := newApp()
 	dir := t.TempDir()
 	oldWd, _ := os.Getwd()
 	os.Chdir(dir)
@@ -125,7 +110,7 @@ func TestRunNoArgsWithDB(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, defaultDBFile), []byte{}, 0o644)
 
 	var buf bytes.Buffer
-	err := run(nil, &buf)
+	err := a.run(nil, &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -135,13 +120,14 @@ func TestRunNoArgsWithDB(t *testing.T) {
 }
 
 func TestRunHelpShowsUsageEvenWithNoDB(t *testing.T) {
+	a := newApp()
 	dir := t.TempDir()
 	oldWd, _ := os.Getwd()
 	os.Chdir(dir)
 	t.Cleanup(func() { os.Chdir(oldWd) })
 
 	var buf bytes.Buffer
-	err := run([]string{"--help"}, &buf)
+	err := a.run([]string{"--help"}, &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -151,50 +137,54 @@ func TestRunHelpShowsUsageEvenWithNoDB(t *testing.T) {
 }
 
 func TestRunHelp(t *testing.T) {
+	a := newApp()
 	t.Parallel()
 	for _, flag := range []string{"--help", "-h"} {
 		var buf bytes.Buffer
-		err := run([]string{flag}, &buf)
+		err := a.run([]string{flag}, &buf)
 		if err != nil {
-			t.Fatalf("run(%s): %v", flag, err)
+			t.Fatalf("a.run(%s): %v", flag, err)
 		}
 		if !strings.Contains(buf.String(), "Commands:") {
-			t.Errorf("run(%s) output missing Commands section", flag)
+			t.Errorf("a.run(%s) output missing Commands section", flag)
 		}
 	}
 }
 
 func TestRunVersion(t *testing.T) {
+	a := newApp()
 	t.Parallel()
 	var buf bytes.Buffer
-	err := run([]string{"--version"}, &buf)
+	err := a.run([]string{"--version"}, &buf)
 	if err != nil {
-		t.Fatalf("run(--version): %v", err)
+		t.Fatalf("a.run(--version): %v", err)
 	}
 	if !strings.Contains(buf.String(), version) {
-		t.Errorf("run(--version) = %q, want version %q", buf.String(), version)
+		t.Errorf("a.run(--version) = %q, want version %q", buf.String(), version)
 	}
 }
 
 func TestRunCommandHelp(t *testing.T) {
+	a := newApp()
 	t.Parallel()
 	cmds := []string{"init", "status", "deposit", "strata", "excavate", "erode", "compact", "resolve", "setup"}
 	for _, cmd := range cmds {
 		var buf bytes.Buffer
-		err := run([]string{cmd, "--help"}, &buf)
+		err := a.run([]string{cmd, "--help"}, &buf)
 		if err != nil {
-			t.Fatalf("run(%s --help): %v", cmd, err)
+			t.Fatalf("a.run(%s --help): %v", cmd, err)
 		}
 		if !strings.Contains(buf.String(), "Usage:") {
-			t.Errorf("run(%s --help) output missing Usage:", cmd)
+			t.Errorf("a.run(%s --help) output missing Usage:", cmd)
 		}
 	}
 }
 
 func TestRunUnknownCommand(t *testing.T) {
+	a := newApp()
 	t.Parallel()
 	var buf bytes.Buffer
-	err := run([]string{"bogus"}, &buf)
+	err := a.run([]string{"bogus"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for unknown command")
 	}
@@ -226,12 +216,13 @@ func TestIsHelp(t *testing.T) {
 // --- init tests ---
 
 func TestCmdInit(t *testing.T) {
+	a := newApp()
 	t.Parallel()
 	dir := t.TempDir()
 	dbFile := filepath.Join(dir, "test.db")
 
 	var buf bytes.Buffer
-	err := run([]string{"init", "--db", dbFile}, &buf)
+	err := a.run([]string{"init", "--db", dbFile}, &buf)
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -252,9 +243,10 @@ func TestCmdInit(t *testing.T) {
 }
 
 func TestCmdInitInvalidDB(t *testing.T) {
+	a := newApp()
 	t.Parallel()
 	var buf bytes.Buffer
-	err := run([]string{"init", "--db", "/nonexistent/path/test.db"}, &buf)
+	err := a.run([]string{"init", "--db", "/nonexistent/path/test.db"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for invalid db path")
 	}
@@ -264,6 +256,7 @@ func TestCmdInitInvalidDB(t *testing.T) {
 }
 
 func TestCmdInitDefaultPath(t *testing.T) {
+	a := newApp()
 	dir := t.TempDir()
 	oldWd, _ := os.Getwd()
 	if err := os.Chdir(dir); err != nil {
@@ -272,7 +265,7 @@ func TestCmdInitDefaultPath(t *testing.T) {
 	t.Cleanup(func() { os.Chdir(oldWd) })
 
 	var buf bytes.Buffer
-	if err := run([]string{"init"}, &buf); err != nil {
+	if err := a.run([]string{"init"}, &buf); err != nil {
 		t.Fatalf("init with default path: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, defaultDBFile)); os.IsNotExist(err) {
@@ -283,17 +276,18 @@ func TestCmdInitDefaultPath(t *testing.T) {
 // --- status tests ---
 
 func TestCmdStatus(t *testing.T) {
+	a := newApp()
 	t.Parallel()
 	dir := t.TempDir()
 	dbFile := filepath.Join(dir, "status.db")
 
 	var initBuf bytes.Buffer
-	if err := run([]string{"init", "--db", dbFile}, &initBuf); err != nil {
+	if err := a.run([]string{"init", "--db", dbFile}, &initBuf); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 
 	var buf bytes.Buffer
-	if err := run([]string{"status", "--db", dbFile}, &buf); err != nil {
+	if err := a.run([]string{"status", "--db", dbFile}, &buf); err != nil {
 		t.Fatalf("status: %v", err)
 	}
 
@@ -314,9 +308,10 @@ func TestCmdStatus(t *testing.T) {
 }
 
 func TestCmdStatusInvalidDB(t *testing.T) {
+	a := newApp()
 	t.Parallel()
 	var buf bytes.Buffer
-	err := run([]string{"status", "--db", "/nonexistent/path/test.db"}, &buf)
+	err := a.run([]string{"status", "--db", "/nonexistent/path/test.db"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for invalid db path")
 	}
@@ -326,17 +321,17 @@ func TestCmdStatusInvalidDB(t *testing.T) {
 }
 
 func TestCmdStatusListError(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			listAllFn: func() ([]*model.Memory, error) {
 				return nil, fmt.Errorf("db on fire")
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdStatus([]string{}, &buf)
+	err := a.cmdStatus([]string{}, &buf)
 	if err == nil {
 		t.Fatal("expected error from list")
 	}
@@ -346,7 +341,8 @@ func TestCmdStatusListError(t *testing.T) {
 }
 
 func TestCmdStatusWithMemories(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			listAllFn: func() ([]*model.Memory, error) {
 				return []*model.Memory{
@@ -358,10 +354,9 @@ func TestCmdStatusWithMemories(t *testing.T) {
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	if err := cmdStatus([]string{}, &buf); err != nil {
+	if err := a.cmdStatus([]string{}, &buf); err != nil {
 		t.Fatalf("status: %v", err)
 	}
 
@@ -386,23 +381,22 @@ func TestCmdStatusWithMemories(t *testing.T) {
 // --- deposit tests ---
 
 func TestCmdDeposit(t *testing.T) {
+	a := newApp()
 	// Not parallel: mutates global newUUID and timeNow.
 	dir := t.TempDir()
 	dbFile := filepath.Join(dir, "deposit.db")
 
 	var initBuf bytes.Buffer
-	if err := run([]string{"init", "--db", dbFile}, &initBuf); err != nil {
+	if err := a.run([]string{"init", "--db", dbFile}, &initBuf); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 
 	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	restoreUUID := setUUID("fixed-uuid-123")
-	defer restoreUUID()
-	restoreTime := setTimeNow(fixedTime)
-	defer restoreTime()
+	setUUID(a, "fixed-uuid-123")
+	setTimeNow(a, fixedTime)
 
 	var buf bytes.Buffer
-	err := run([]string{
+	err := a.run([]string{
 		"deposit",
 		"--db", dbFile,
 		"--content", "User prefers dark mode",
@@ -439,22 +433,21 @@ func TestCmdDeposit(t *testing.T) {
 }
 
 func TestCmdDepositWithHardness(t *testing.T) {
+	a := newApp()
 	dir := t.TempDir()
 	dbFile := filepath.Join(dir, "deposit.db")
 
 	var initBuf bytes.Buffer
-	if err := run([]string{"init", "--db", dbFile}, &initBuf); err != nil {
+	if err := a.run([]string{"init", "--db", dbFile}, &initBuf); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 
 	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	restoreUUID := setUUID("hardness-uuid")
-	defer restoreUUID()
-	restoreTime := setTimeNow(fixedTime)
-	defer restoreTime()
+	setUUID(a, "hardness-uuid")
+	setTimeNow(a, fixedTime)
 
 	var buf bytes.Buffer
-	err := run([]string{
+	err := a.run([]string{
 		"deposit",
 		"--db", dbFile,
 		"--content", "Team uses vitest",
@@ -474,9 +467,10 @@ func TestCmdDepositWithHardness(t *testing.T) {
 }
 
 func TestCmdDepositInvalidHardness(t *testing.T) {
+	a := newApp()
 	t.Parallel()
 	var buf bytes.Buffer
-	err := run([]string{
+	err := a.run([]string{
 		"deposit",
 		"--content", "test",
 		"--hardness", "15",
@@ -490,9 +484,10 @@ func TestCmdDepositInvalidHardness(t *testing.T) {
 }
 
 func TestCmdDepositNonNumericHardness(t *testing.T) {
+	a := newApp()
 	t.Parallel()
 	var buf bytes.Buffer
-	err := run([]string{
+	err := a.run([]string{
 		"deposit",
 		"--content", "test",
 		"--hardness", "abc",
@@ -506,9 +501,10 @@ func TestCmdDepositNonNumericHardness(t *testing.T) {
 }
 
 func TestCmdDepositMissingContent(t *testing.T) {
+	a := newApp()
 	t.Parallel()
 	var buf bytes.Buffer
-	err := run([]string{"deposit"}, &buf)
+	err := a.run([]string{"deposit"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for missing content")
 	}
@@ -518,17 +514,17 @@ func TestCmdDepositMissingContent(t *testing.T) {
 }
 
 func TestCmdDepositInsertError(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			insertFn: func(_ *model.Memory) error {
 				return fmt.Errorf("disk full")
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdDeposit([]string{"--content", "test"}, &buf)
+	err := a.cmdDeposit([]string{"--content", "test"}, &buf)
 	if err == nil {
 		t.Fatal("expected insert error")
 	}
@@ -538,20 +534,20 @@ func TestCmdDepositInsertError(t *testing.T) {
 }
 
 func TestCmdDepositNoTags(t *testing.T) {
+	a := newApp()
 	// Not parallel: mutates global newUUID.
 	dir := t.TempDir()
 	dbFile := filepath.Join(dir, "notags.db")
 
 	var initBuf bytes.Buffer
-	if err := run([]string{"init", "--db", dbFile}, &initBuf); err != nil {
+	if err := a.run([]string{"init", "--db", dbFile}, &initBuf); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 
-	restoreUUID := setUUID("no-tags-id")
-	defer restoreUUID()
+	setUUID(a, "no-tags-id")
 
 	var buf bytes.Buffer
-	err := run([]string{"deposit", "--db", dbFile, "--content", "simple memory"}, &buf)
+	err := a.run([]string{"deposit", "--db", dbFile, "--content", "simple memory"}, &buf)
 	if err != nil {
 		t.Fatalf("deposit: %v", err)
 	}
@@ -566,9 +562,10 @@ func TestCmdDepositNoTags(t *testing.T) {
 }
 
 func TestCmdDepositInvalidDB(t *testing.T) {
+	a := newApp()
 	t.Parallel()
 	var buf bytes.Buffer
-	err := run([]string{"deposit", "--db", "/nonexistent/path/test.db", "--content", "test"}, &buf)
+	err := a.run([]string{"deposit", "--db", "/nonexistent/path/test.db", "--content", "test"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for invalid db path")
 	}
@@ -580,18 +577,19 @@ func TestCmdDepositInvalidDB(t *testing.T) {
 // --- strata tests ---
 
 func TestCmdStrata(t *testing.T) {
+	a := newApp()
 	t.Parallel()
 	dir := t.TempDir()
 	dbFile := filepath.Join(dir, "strata.db")
 
 	var initBuf bytes.Buffer
-	if err := run([]string{"init", "--db", dbFile}, &initBuf); err != nil {
+	if err := a.run([]string{"init", "--db", dbFile}, &initBuf); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 
 	// Empty strata.
 	var buf bytes.Buffer
-	err := run([]string{"strata", "--db", dbFile}, &buf)
+	err := a.run([]string{"strata", "--db", dbFile}, &buf)
 	if err != nil {
 		t.Fatalf("strata: %v", err)
 	}
@@ -601,9 +599,9 @@ func TestCmdStrata(t *testing.T) {
 }
 
 func TestCmdStrataWithMemories(t *testing.T) {
+	a := newApp()
 	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	restoreTime := setTimeNow(fixedTime)
-	defer restoreTime()
+	setTimeNow(a, fixedTime)
 
 	memories := []*model.Memory{
 		{ID: "a", State: model.StateActive, Content: "first", Confidence: 0.9,
@@ -614,17 +612,16 @@ func TestCmdStrataWithMemories(t *testing.T) {
 			Tags: []string{"y"}},
 	}
 
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			listAllFn: func() ([]*model.Memory, error) {
 				return memories, nil
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	if err := cmdStrata([]string{}, &buf); err != nil {
+	if err := a.cmdStrata([]string{}, &buf); err != nil {
 		t.Fatalf("strata: %v", err)
 	}
 
@@ -640,11 +637,12 @@ func TestCmdStrataWithMemories(t *testing.T) {
 }
 
 func TestCmdStrataFilterByState(t *testing.T) {
+	a := newApp()
 	activeMemories := []*model.Memory{
 		{ID: "active-1", State: model.StateActive, Content: "active only", Confidence: 0.8},
 	}
 
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			listByStateFn: func(s model.State) ([]*model.Memory, error) {
 				if s != model.StateActive {
@@ -654,10 +652,9 @@ func TestCmdStrataFilterByState(t *testing.T) {
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	if err := cmdStrata([]string{"--state", "active"}, &buf); err != nil {
+	if err := a.cmdStrata([]string{"--state", "active"}, &buf); err != nil {
 		t.Fatalf("strata: %v", err)
 	}
 
@@ -671,17 +668,17 @@ func TestCmdStrataFilterByState(t *testing.T) {
 }
 
 func TestCmdStrataListError(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			listAllFn: func() ([]*model.Memory, error) {
 				return nil, fmt.Errorf("query failed")
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdStrata([]string{}, &buf)
+	err := a.cmdStrata([]string{}, &buf)
 	if err == nil {
 		t.Fatal("expected error from list")
 	}
@@ -691,9 +688,10 @@ func TestCmdStrataListError(t *testing.T) {
 }
 
 func TestCmdStrataInvalidDB(t *testing.T) {
+	a := newApp()
 	t.Parallel()
 	var buf bytes.Buffer
-	err := run([]string{"strata", "--db", "/nonexistent/path/test.db"}, &buf)
+	err := a.run([]string{"strata", "--db", "/nonexistent/path/test.db"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for invalid db path")
 	}
@@ -703,13 +701,13 @@ func TestCmdStrataInvalidDB(t *testing.T) {
 }
 
 func TestCmdStrataInvalidState(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdStrata([]string{"--state", "banana"}, &buf)
+	err := a.cmdStrata([]string{"--state", "banana"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for invalid state")
 	}
@@ -719,17 +717,17 @@ func TestCmdStrataInvalidState(t *testing.T) {
 }
 
 func TestCmdStrataListByStateError(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			listByStateFn: func(_ model.State) ([]*model.Memory, error) {
 				return nil, fmt.Errorf("state query failed")
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdStrata([]string{"--state", "active"}, &buf)
+	err := a.cmdStrata([]string{"--state", "active"}, &buf)
 	if err == nil {
 		t.Fatal("expected error from list by state")
 	}
@@ -741,12 +739,12 @@ func TestCmdStrataListByStateError(t *testing.T) {
 // --- openAndMigrate tests ---
 
 func TestOpenAndMigrateMigrateError(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{migrateErr: fmt.Errorf("bad schema")}, nil
 	})
-	defer restore()
 
-	_, _, err := openAndMigrate([]string{})
+	_, _, err := a.openAndMigrate([]string{})
 	if err == nil {
 		t.Fatal("expected migrate error")
 	}
@@ -756,12 +754,12 @@ func TestOpenAndMigrateMigrateError(t *testing.T) {
 }
 
 func TestOpenAndMigrateOpenError(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return nil, fmt.Errorf("cannot open")
 	})
-	defer restore()
 
-	_, _, err := openAndMigrate([]string{})
+	_, _, err := a.openAndMigrate([]string{})
 	if err == nil {
 		t.Fatal("expected open error")
 	}
@@ -771,12 +769,12 @@ func TestOpenAndMigrateOpenError(t *testing.T) {
 }
 
 func TestOpenAndMigrateAbsError(t *testing.T) {
-	restore := setAbsFunc(func(_ string) (string, error) {
+	a := newApp()
+	setAbsFunc(a, func(_ string) (string, error) {
 		return "", fmt.Errorf("abs failed")
 	})
-	defer restore()
 
-	_, _, err := openAndMigrate([]string{})
+	_, _, err := a.openAndMigrate([]string{})
 	if err == nil {
 		t.Fatal("expected abs error")
 	}
@@ -867,9 +865,9 @@ func TestWriteJSON_MarshalError(t *testing.T) {
 // --- excavate tests ---
 
 func TestCmdExcavate(t *testing.T) {
+	a := newApp()
 	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	restoreTime := setTimeNow(fixedTime)
-	defer restoreTime()
+	setTimeNow(a, fixedTime)
 
 	mem := &model.Memory{
 		ID:             "mem-1",
@@ -885,7 +883,7 @@ func TestCmdExcavate(t *testing.T) {
 	}
 
 	var updated *model.Memory
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			getFn: func(id string) (*model.Memory, error) {
 				if id != "mem-1" {
@@ -903,10 +901,9 @@ func TestCmdExcavate(t *testing.T) {
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdExcavate([]string{"--id", "mem-1"}, &buf)
+	err := a.cmdExcavate([]string{"--id", "mem-1"}, &buf)
 	if err != nil {
 		t.Fatalf("excavate: %v", err)
 	}
@@ -938,9 +935,10 @@ func TestCmdExcavate(t *testing.T) {
 }
 
 func TestCmdExcavateMissingID(t *testing.T) {
+	a := newApp()
 	t.Parallel()
 	var buf bytes.Buffer
-	err := run([]string{"excavate"}, &buf)
+	err := a.run([]string{"excavate"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for missing --id")
 	}
@@ -950,17 +948,17 @@ func TestCmdExcavateMissingID(t *testing.T) {
 }
 
 func TestCmdExcavateNotFound(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			getFn: func(_ string) (*model.Memory, error) {
 				return nil, store.ErrNotFound
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdExcavate([]string{"--id", "missing"}, &buf)
+	err := a.cmdExcavate([]string{"--id", "missing"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for missing memory")
 	}
@@ -970,11 +968,11 @@ func TestCmdExcavateNotFound(t *testing.T) {
 }
 
 func TestCmdExcavateUpdateError(t *testing.T) {
+	a := newApp()
 	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	restoreTime := setTimeNow(fixedTime)
-	defer restoreTime()
+	setTimeNow(a, fixedTime)
 
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			getFn: func(_ string) (*model.Memory, error) {
 				return &model.Memory{
@@ -987,10 +985,9 @@ func TestCmdExcavateUpdateError(t *testing.T) {
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdExcavate([]string{"--id", "x"}, &buf)
+	err := a.cmdExcavate([]string{"--id", "x"}, &buf)
 	if err == nil {
 		t.Fatal("expected update error")
 	}
@@ -1000,9 +997,10 @@ func TestCmdExcavateUpdateError(t *testing.T) {
 }
 
 func TestCmdExcavateInvalidDB(t *testing.T) {
+	a := newApp()
 	t.Parallel()
 	var buf bytes.Buffer
-	err := run([]string{"excavate", "--id", "x", "--db", "/nonexistent/path/test.db"}, &buf)
+	err := a.run([]string{"excavate", "--id", "x", "--db", "/nonexistent/path/test.db"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for invalid db path")
 	}
@@ -1014,17 +1012,17 @@ func TestCmdExcavateInvalidDB(t *testing.T) {
 // --- erode tests ---
 
 func TestCmdErodeNoMemories(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			listAllFn: func() ([]*model.Memory, error) {
 				return nil, nil
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	if err := cmdErode([]string{}, &buf); err != nil {
+	if err := a.cmdErode([]string{}, &buf); err != nil {
 		t.Fatalf("erode: %v", err)
 	}
 
@@ -1041,9 +1039,9 @@ func TestCmdErodeNoMemories(t *testing.T) {
 }
 
 func TestCmdErodeWithTransitions(t *testing.T) {
+	a := newApp()
 	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	restoreTime := setTimeNow(fixedTime)
-	defer restoreTime()
+	setTimeNow(a, fixedTime)
 
 	// Memory that was active 200 hours ago with confidence 0.5:
 	// 0.5 * e^(-0.01*200) = 0.5 * e^(-2) ≈ 0.0677 -> below archive threshold (0.1)
@@ -1073,7 +1071,7 @@ func TestCmdErodeWithTransitions(t *testing.T) {
 	}
 
 	var updatedIDs []string
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			listAllFn: func() ([]*model.Memory, error) {
 				// Return copies.
@@ -1089,10 +1087,9 @@ func TestCmdErodeWithTransitions(t *testing.T) {
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	if err := cmdErode([]string{}, &buf); err != nil {
+	if err := a.cmdErode([]string{}, &buf); err != nil {
 		t.Fatalf("erode: %v", err)
 	}
 
@@ -1126,17 +1123,17 @@ func TestCmdErodeWithTransitions(t *testing.T) {
 }
 
 func TestCmdErodeListError(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			listAllFn: func() ([]*model.Memory, error) {
 				return nil, fmt.Errorf("db gone")
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdErode([]string{}, &buf)
+	err := a.cmdErode([]string{}, &buf)
 	if err == nil {
 		t.Fatal("expected list error")
 	}
@@ -1146,11 +1143,11 @@ func TestCmdErodeListError(t *testing.T) {
 }
 
 func TestCmdErodeUpdateError(t *testing.T) {
+	a := newApp()
 	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	restoreTime := setTimeNow(fixedTime)
-	defer restoreTime()
+	setTimeNow(a, fixedTime)
 
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			listAllFn: func() ([]*model.Memory, error) {
 				return []*model.Memory{
@@ -1165,10 +1162,9 @@ func TestCmdErodeUpdateError(t *testing.T) {
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdErode([]string{}, &buf)
+	err := a.cmdErode([]string{}, &buf)
 	if err == nil {
 		t.Fatal("expected update error")
 	}
@@ -1178,9 +1174,10 @@ func TestCmdErodeUpdateError(t *testing.T) {
 }
 
 func TestCmdErodeInvalidDB(t *testing.T) {
+	a := newApp()
 	t.Parallel()
 	var buf bytes.Buffer
-	err := run([]string{"erode", "--db", "/nonexistent/path/test.db"}, &buf)
+	err := a.run([]string{"erode", "--db", "/nonexistent/path/test.db"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for invalid db path")
 	}
@@ -1190,9 +1187,9 @@ func TestCmdErodeInvalidDB(t *testing.T) {
 }
 
 func TestCmdErodeDormantTransition(t *testing.T) {
+	a := newApp()
 	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	restoreTime := setTimeNow(fixedTime)
-	defer restoreTime()
+	setTimeNow(a, fixedTime)
 
 	// Memory with confidence 0.5 accessed 50 hours ago:
 	// 0.5 * e^(-0.01*50) = 0.5 * e^(-0.5) ≈ 0.303 -> dormant (between 0.1 and 0.4)
@@ -1207,7 +1204,7 @@ func TestCmdErodeDormantTransition(t *testing.T) {
 		Hardness:       1,
 	}
 
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			listAllFn: func() ([]*model.Memory, error) {
 				cp := *mem
@@ -1216,10 +1213,9 @@ func TestCmdErodeDormantTransition(t *testing.T) {
 			updateFn: func(_ *model.Memory) error { return nil },
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	if err := cmdErode([]string{}, &buf); err != nil {
+	if err := a.cmdErode([]string{}, &buf); err != nil {
 		t.Fatalf("erode: %v", err)
 	}
 
@@ -1238,15 +1234,15 @@ func TestCmdErodeDormantTransition(t *testing.T) {
 }
 
 func TestCmdErodeAutoQuick(t *testing.T) {
+	a := newApp()
 	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	restoreTime := setTimeNow(fixedTime)
-	defer restoreTime()
+	setTimeNow(a, fixedTime)
 
 	active := []*model.Memory{
 		{ID: "a1", Content: "fact", Confidence: 0.8, State: model.StateActive, LastAccessedAt: fixedTime, Hardness: 5, Tags: []string{}},
 	}
 
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			listByStateFn: func(s model.State) ([]*model.Memory, error) {
 				if s == model.StateActive {
@@ -1256,10 +1252,9 @@ func TestCmdErodeAutoQuick(t *testing.T) {
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	if err := cmdErode([]string{"--auto"}, &buf); err != nil {
+	if err := a.cmdErode([]string{"--auto"}, &buf); err != nil {
 		t.Fatalf("erode --auto: %v", err)
 	}
 
@@ -1276,9 +1271,9 @@ func TestCmdErodeAutoQuick(t *testing.T) {
 }
 
 func TestCmdErodeAutoStandard(t *testing.T) {
+	a := newApp()
 	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	restoreTime := setTimeNow(fixedTime)
-	defer restoreTime()
+	setTimeNow(a, fixedTime)
 
 	active := make([]*model.Memory, 100)
 	for i := range active {
@@ -1288,7 +1283,7 @@ func TestCmdErodeAutoStandard(t *testing.T) {
 		}
 	}
 
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			listByStateFn: func(s model.State) ([]*model.Memory, error) {
 				if s == model.StateActive {
@@ -1301,10 +1296,9 @@ func TestCmdErodeAutoStandard(t *testing.T) {
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	if err := cmdErode([]string{"--auto"}, &buf); err != nil {
+	if err := a.cmdErode([]string{"--auto"}, &buf); err != nil {
 		t.Fatalf("erode --auto: %v", err)
 	}
 
@@ -1318,9 +1312,9 @@ func TestCmdErodeAutoStandard(t *testing.T) {
 }
 
 func TestCmdErodeAutoDeep(t *testing.T) {
+	a := newApp()
 	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	restoreTime := setTimeNow(fixedTime)
-	defer restoreTime()
+	setTimeNow(a, fixedTime)
 
 	active := make([]*model.Memory, 100)
 	for i := range active {
@@ -1343,13 +1337,12 @@ func TestCmdErodeAutoDeep(t *testing.T) {
 		},
 	}
 
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return ms, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	if err := cmdErode([]string{"--auto"}, &buf); err != nil {
+	if err := a.cmdErode([]string{"--auto"}, &buf); err != nil {
 		t.Fatalf("erode --auto: %v", err)
 	}
 
@@ -1380,17 +1373,17 @@ func TestBumpSession(t *testing.T) {
 }
 
 func TestCmdErodeAutoListError(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			listByStateFn: func(s model.State) ([]*model.Memory, error) {
 				return nil, fmt.Errorf("list failed")
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdErode([]string{"--auto"}, &buf)
+	err := a.cmdErode([]string{"--auto"}, &buf)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -1400,6 +1393,7 @@ func TestCmdErodeAutoListError(t *testing.T) {
 }
 
 func TestRunErosionStandardErrors(t *testing.T) {
+	a := newApp()
 	calls := 0
 	ms := &mockStore{
 		listByStateFn: func(s model.State) ([]*model.Memory, error) {
@@ -1411,7 +1405,7 @@ func TestRunErosionStandardErrors(t *testing.T) {
 		},
 	}
 
-	_, err := runErosion(ms, "standard")
+	_, err := a.runErosion(ms, "standard")
 	if err == nil {
 		t.Fatal("expected dormant error")
 	}
@@ -1421,6 +1415,7 @@ func TestRunErosionStandardErrors(t *testing.T) {
 }
 
 func TestRunErosionStandardActiveError(t *testing.T) {
+	a := newApp()
 	ms := &mockStore{
 		listByStateFn: func(s model.State) ([]*model.Memory, error) {
 			if s == model.StateActive {
@@ -1430,7 +1425,7 @@ func TestRunErosionStandardActiveError(t *testing.T) {
 		},
 	}
 
-	_, err := runErosion(ms, "standard")
+	_, err := a.runErosion(ms, "standard")
 	if err == nil {
 		t.Fatal("expected active error")
 	}
@@ -1440,35 +1435,37 @@ func TestRunErosionStandardActiveError(t *testing.T) {
 }
 
 func TestRunErosionQuickError(t *testing.T) {
+	a := newApp()
 	ms := &mockStore{
 		listByStateFn: func(s model.State) ([]*model.Memory, error) {
 			return nil, fmt.Errorf("quick fail")
 		},
 	}
 
-	_, err := runErosion(ms, "quick")
+	_, err := a.runErosion(ms, "quick")
 	if err == nil {
 		t.Fatal("expected error")
 	}
 }
 
 func TestRunErosionDeepError(t *testing.T) {
+	a := newApp()
 	ms := &mockStore{
 		listAllFn: func() ([]*model.Memory, error) {
 			return nil, fmt.Errorf("deep fail")
 		},
 	}
 
-	_, err := runErosion(ms, "deep")
+	_, err := a.runErosion(ms, "deep")
 	if err == nil {
 		t.Fatal("expected error")
 	}
 }
 
 func TestAutoErodeRunErosionError(t *testing.T) {
+	a := newApp()
 	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	restoreTime := setTimeNow(fixedTime)
-	defer restoreTime()
+	setTimeNow(a, fixedTime)
 
 	calls := 0
 	ms := &mockStore{
@@ -1481,22 +1478,21 @@ func TestAutoErodeRunErosionError(t *testing.T) {
 		},
 	}
 
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return ms, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdErode([]string{"--auto"}, &buf)
+	err := a.cmdErode([]string{"--auto"}, &buf)
 	if err == nil {
 		t.Fatal("expected error from runErosion failure")
 	}
 }
 
 func TestAutoErodeSetMetaError(t *testing.T) {
+	a := newApp()
 	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	restoreTime := setTimeNow(fixedTime)
-	defer restoreTime()
+	setTimeNow(a, fixedTime)
 
 	ms := &mockStore{
 		listByStateFn: func(s model.State) ([]*model.Memory, error) {
@@ -1504,13 +1500,12 @@ func TestAutoErodeSetMetaError(t *testing.T) {
 		},
 	}
 
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return ms, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	if err := cmdErode([]string{"--auto"}, &buf); err != nil {
+	if err := a.cmdErode([]string{"--auto"}, &buf); err != nil {
 		t.Fatalf("erode --auto: %v", err)
 	}
 
@@ -1526,6 +1521,7 @@ func TestAutoErodeSetMetaError(t *testing.T) {
 // --- compact tests ---
 
 func TestCmdCompactCandidates(t *testing.T) {
+	a := newApp()
 	dormant := []*model.Memory{
 		{ID: "d1", State: model.StateDormant, Content: "dormant fact", Tags: []string{}},
 	}
@@ -1533,7 +1529,7 @@ func TestCmdCompactCandidates(t *testing.T) {
 		{ID: "a1", State: model.StateArchived, Content: "archived fact", Tags: []string{}},
 	}
 
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			listByStateFn: func(s model.State) ([]*model.Memory, error) {
 				switch s {
@@ -1546,10 +1542,9 @@ func TestCmdCompactCandidates(t *testing.T) {
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	if err := cmdCompact([]string{}, &buf); err != nil {
+	if err := a.cmdCompact([]string{}, &buf); err != nil {
 		t.Fatalf("compact: %v", err)
 	}
 
@@ -1567,7 +1562,8 @@ func TestCmdCompactCandidates(t *testing.T) {
 }
 
 func TestCmdCompactCandidatesDormantError(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			listByStateFn: func(s model.State) ([]*model.Memory, error) {
 				if s == model.StateDormant {
@@ -1577,10 +1573,9 @@ func TestCmdCompactCandidatesDormantError(t *testing.T) {
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdCompact([]string{}, &buf)
+	err := a.cmdCompact([]string{}, &buf)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -1590,7 +1585,8 @@ func TestCmdCompactCandidatesDormantError(t *testing.T) {
 }
 
 func TestCmdCompactCandidatesArchivedError(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			listByStateFn: func(s model.State) ([]*model.Memory, error) {
 				if s == model.StateArchived {
@@ -1600,10 +1596,9 @@ func TestCmdCompactCandidatesArchivedError(t *testing.T) {
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdCompact([]string{}, &buf)
+	err := a.cmdCompact([]string{}, &buf)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -1613,11 +1608,10 @@ func TestCmdCompactCandidatesArchivedError(t *testing.T) {
 }
 
 func TestCmdCompactApply(t *testing.T) {
+	a := newApp()
 	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	restoreTime := setTimeNow(fixedTime)
-	defer restoreTime()
-	restoreUUID := setUUID("compacted-uuid")
-	defer restoreUUID()
+	setTimeNow(a, fixedTime)
+	setUUID(a, "compacted-uuid")
 
 	memStore := map[string]*model.Memory{
 		"s1": {ID: "s1", Content: "fact A", Tags: []string{"alpha", "shared"}, State: model.StateDormant},
@@ -1625,7 +1619,7 @@ func TestCmdCompactApply(t *testing.T) {
 	}
 
 	var insertedMem *model.Memory
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			getFn: func(id string) (*model.Memory, error) {
 				m, ok := memStore[id]
@@ -1646,10 +1640,9 @@ func TestCmdCompactApply(t *testing.T) {
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdCompact([]string{
+	err := a.cmdCompact([]string{
 		"--apply", "Combined fact about A and B",
 		"--sources", "s1,s2",
 	}, &buf)
@@ -1694,13 +1687,13 @@ func TestCmdCompactApply(t *testing.T) {
 }
 
 func TestCmdCompactApplyMissingSources(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdCompact([]string{"--apply", "merged content"}, &buf)
+	err := a.cmdCompact([]string{"--apply", "merged content"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for missing --sources")
 	}
@@ -1710,13 +1703,13 @@ func TestCmdCompactApplyMissingSources(t *testing.T) {
 }
 
 func TestCmdCompactApplyEmptySources(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdCompact([]string{"--apply", "merged", "--sources", " , , "}, &buf)
+	err := a.cmdCompact([]string{"--apply", "merged", "--sources", " , , "}, &buf)
 	if err == nil {
 		t.Fatal("expected error for empty sources")
 	}
@@ -1726,17 +1719,17 @@ func TestCmdCompactApplyEmptySources(t *testing.T) {
 }
 
 func TestCmdCompactApplySourceNotFound(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			getFn: func(_ string) (*model.Memory, error) {
 				return nil, store.ErrNotFound
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdCompact([]string{"--apply", "merged", "--sources", "missing-id"}, &buf)
+	err := a.cmdCompact([]string{"--apply", "merged", "--sources", "missing-id"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for missing source")
 	}
@@ -1746,7 +1739,8 @@ func TestCmdCompactApplySourceNotFound(t *testing.T) {
 }
 
 func TestCmdCompactApplyDeleteError(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			getFn: func(_ string) (*model.Memory, error) {
 				return &model.Memory{ID: "x", Tags: []string{}}, nil
@@ -1756,10 +1750,9 @@ func TestCmdCompactApplyDeleteError(t *testing.T) {
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdCompact([]string{"--apply", "merged", "--sources", "x"}, &buf)
+	err := a.cmdCompact([]string{"--apply", "merged", "--sources", "x"}, &buf)
 	if err == nil {
 		t.Fatal("expected delete error")
 	}
@@ -1769,7 +1762,8 @@ func TestCmdCompactApplyDeleteError(t *testing.T) {
 }
 
 func TestCmdCompactApplyInsertError(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			getFn: func(_ string) (*model.Memory, error) {
 				return &model.Memory{ID: "x", Tags: []string{}}, nil
@@ -1779,10 +1773,9 @@ func TestCmdCompactApplyInsertError(t *testing.T) {
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdCompact([]string{"--apply", "merged", "--sources", "x"}, &buf)
+	err := a.cmdCompact([]string{"--apply", "merged", "--sources", "x"}, &buf)
 	if err == nil {
 		t.Fatal("expected insert error")
 	}
@@ -1792,9 +1785,10 @@ func TestCmdCompactApplyInsertError(t *testing.T) {
 }
 
 func TestCmdCompactInvalidDB(t *testing.T) {
+	a := newApp()
 	t.Parallel()
 	var buf bytes.Buffer
-	err := run([]string{"compact", "--db", "/nonexistent/path/test.db"}, &buf)
+	err := a.run([]string{"compact", "--db", "/nonexistent/path/test.db"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for invalid db path")
 	}
@@ -1806,12 +1800,12 @@ func TestCmdCompactInvalidDB(t *testing.T) {
 // --- resolve tests ---
 
 func TestCmdResolveUpdate(t *testing.T) {
+	a := newApp()
 	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	restoreTime := setTimeNow(fixedTime)
-	defer restoreTime()
+	setTimeNow(a, fixedTime)
 
 	var updatedMem *model.Memory
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			getFn: func(id string) (*model.Memory, error) {
 				return &model.Memory{
@@ -1825,10 +1819,9 @@ func TestCmdResolveUpdate(t *testing.T) {
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdResolve([]string{"--action", "update", "--id", "mem-1", "--content", "corrected fact"}, &buf)
+	err := a.cmdResolve([]string{"--action", "update", "--id", "mem-1", "--content", "corrected fact"}, &buf)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -1855,15 +1848,14 @@ func TestCmdResolveUpdate(t *testing.T) {
 }
 
 func TestCmdResolveSupersede(t *testing.T) {
+	a := newApp()
 	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	restoreTime := setTimeNow(fixedTime)
-	defer restoreTime()
-	restoreUUID := setUUID("new-uuid")
-	defer restoreUUID()
+	setTimeNow(a, fixedTime)
+	setUUID(a, "new-uuid")
 
 	var updatedMem *model.Memory
 	var insertedMem *model.Memory
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			getFn: func(id string) (*model.Memory, error) {
 				return &model.Memory{
@@ -1881,10 +1873,9 @@ func TestCmdResolveSupersede(t *testing.T) {
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdResolve([]string{"--action", "supersede", "--id", "old-1", "--content", "new truth"}, &buf)
+	err := a.cmdResolve([]string{"--action", "supersede", "--id", "old-1", "--content", "new truth"}, &buf)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -1915,7 +1906,8 @@ func TestCmdResolveSupersede(t *testing.T) {
 }
 
 func TestCmdResolveKeep(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			getFn: func(id string) (*model.Memory, error) {
 				return &model.Memory{
@@ -1924,10 +1916,9 @@ func TestCmdResolveKeep(t *testing.T) {
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdResolve([]string{"--action", "keep", "--id", "keep-1"}, &buf)
+	err := a.cmdResolve([]string{"--action", "keep", "--id", "keep-1"}, &buf)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -1945,9 +1936,10 @@ func TestCmdResolveKeep(t *testing.T) {
 }
 
 func TestCmdResolveMissingAction(t *testing.T) {
+	a := newApp()
 	t.Parallel()
 	var buf bytes.Buffer
-	err := run([]string{"resolve", "--id", "x"}, &buf)
+	err := a.run([]string{"resolve", "--id", "x"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for missing --action")
 	}
@@ -1957,9 +1949,10 @@ func TestCmdResolveMissingAction(t *testing.T) {
 }
 
 func TestCmdResolveMissingID(t *testing.T) {
+	a := newApp()
 	t.Parallel()
 	var buf bytes.Buffer
-	err := run([]string{"resolve", "--action", "keep"}, &buf)
+	err := a.run([]string{"resolve", "--action", "keep"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for missing --id")
 	}
@@ -1969,17 +1962,17 @@ func TestCmdResolveMissingID(t *testing.T) {
 }
 
 func TestCmdResolveUnknownAction(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			getFn: func(_ string) (*model.Memory, error) {
 				return &model.Memory{ID: "x", Tags: []string{}}, nil
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdResolve([]string{"--action", "bogus", "--id", "x"}, &buf)
+	err := a.cmdResolve([]string{"--action", "bogus", "--id", "x"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for unknown action")
 	}
@@ -1989,17 +1982,17 @@ func TestCmdResolveUnknownAction(t *testing.T) {
 }
 
 func TestCmdResolveGetError(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			getFn: func(_ string) (*model.Memory, error) {
 				return nil, store.ErrNotFound
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdResolve([]string{"--action", "keep", "--id", "missing"}, &buf)
+	err := a.cmdResolve([]string{"--action", "keep", "--id", "missing"}, &buf)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -2009,7 +2002,8 @@ func TestCmdResolveGetError(t *testing.T) {
 }
 
 func TestCmdResolveUpdateError(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			getFn: func(_ string) (*model.Memory, error) {
 				return &model.Memory{ID: "x", Tags: []string{}}, nil
@@ -2019,10 +2013,9 @@ func TestCmdResolveUpdateError(t *testing.T) {
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdResolve([]string{"--action", "update", "--id", "x", "--content", "new"}, &buf)
+	err := a.cmdResolve([]string{"--action", "update", "--id", "x", "--content", "new"}, &buf)
 	if err == nil {
 		t.Fatal("expected update error")
 	}
@@ -2032,17 +2025,17 @@ func TestCmdResolveUpdateError(t *testing.T) {
 }
 
 func TestCmdResolveUpdateMissingContent(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			getFn: func(_ string) (*model.Memory, error) {
 				return &model.Memory{ID: "x", Tags: []string{}}, nil
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdResolve([]string{"--action", "update", "--id", "x"}, &buf)
+	err := a.cmdResolve([]string{"--action", "update", "--id", "x"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for missing content")
 	}
@@ -2052,7 +2045,8 @@ func TestCmdResolveUpdateMissingContent(t *testing.T) {
 }
 
 func TestCmdResolveSupersedeArchiveError(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			getFn: func(_ string) (*model.Memory, error) {
 				return &model.Memory{ID: "x", Tags: []string{}}, nil
@@ -2062,10 +2056,9 @@ func TestCmdResolveSupersedeArchiveError(t *testing.T) {
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdResolve([]string{"--action", "supersede", "--id", "x", "--content", "new"}, &buf)
+	err := a.cmdResolve([]string{"--action", "supersede", "--id", "x", "--content", "new"}, &buf)
 	if err == nil {
 		t.Fatal("expected archive error")
 	}
@@ -2075,7 +2068,8 @@ func TestCmdResolveSupersedeArchiveError(t *testing.T) {
 }
 
 func TestCmdResolveSupersedeInsertError(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			getFn: func(_ string) (*model.Memory, error) {
 				return &model.Memory{ID: "x", Tags: []string{}}, nil
@@ -2086,10 +2080,9 @@ func TestCmdResolveSupersedeInsertError(t *testing.T) {
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdResolve([]string{"--action", "supersede", "--id", "x", "--content", "new"}, &buf)
+	err := a.cmdResolve([]string{"--action", "supersede", "--id", "x", "--content", "new"}, &buf)
 	if err == nil {
 		t.Fatal("expected insert error")
 	}
@@ -2099,17 +2092,17 @@ func TestCmdResolveSupersedeInsertError(t *testing.T) {
 }
 
 func TestCmdResolveSupersedesMissingContent(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			getFn: func(_ string) (*model.Memory, error) {
 				return &model.Memory{ID: "x", Tags: []string{}}, nil
 			},
 		}, nil
 	})
-	defer restore()
 
 	var buf bytes.Buffer
-	err := cmdResolve([]string{"--action", "supersede", "--id", "x"}, &buf)
+	err := a.cmdResolve([]string{"--action", "supersede", "--id", "x"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for missing content")
 	}
@@ -2126,11 +2119,11 @@ func (errWriter) Write([]byte) (int, error) {
 }
 
 func TestCmdResolveUpdateWriteError(t *testing.T) {
+	a := newApp()
 	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	restoreTime := setTimeNow(fixedTime)
-	defer restoreTime()
+	setTimeNow(a, fixedTime)
 
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			getFn: func(_ string) (*model.Memory, error) {
 				return &model.Memory{ID: "u1", Content: "old", Tags: []string{}}, nil
@@ -2138,22 +2131,20 @@ func TestCmdResolveUpdateWriteError(t *testing.T) {
 			updateFn: func(_ *model.Memory) error { return nil },
 		}, nil
 	})
-	defer restore()
 
-	err := cmdResolve([]string{"--action", "update", "--id", "u1", "--content", "new", "--db", "test.db"}, errWriter{})
+	err := a.cmdResolve([]string{"--action", "update", "--id", "u1", "--content", "new", "--db", "test.db"}, errWriter{})
 	if err == nil {
 		t.Fatal("expected write error")
 	}
 }
 
 func TestCmdResolveSupersedeWriteError(t *testing.T) {
+	a := newApp()
 	fixedTime := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	restoreTime := setTimeNow(fixedTime)
-	defer restoreTime()
-	restoreUUID := setUUID("new-uuid")
-	defer restoreUUID()
+	setTimeNow(a, fixedTime)
+	setUUID(a, "new-uuid")
 
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			getFn: func(_ string) (*model.Memory, error) {
 				return &model.Memory{ID: "s1", Content: "old", Tags: []string{}}, nil
@@ -2162,34 +2153,34 @@ func TestCmdResolveSupersedeWriteError(t *testing.T) {
 			insertFn: func(_ *model.Memory) error { return nil },
 		}, nil
 	})
-	defer restore()
 
-	err := cmdResolve([]string{"--action", "supersede", "--id", "s1", "--content", "new", "--db", "test.db"}, errWriter{})
+	err := a.cmdResolve([]string{"--action", "supersede", "--id", "s1", "--content", "new", "--db", "test.db"}, errWriter{})
 	if err == nil {
 		t.Fatal("expected write error")
 	}
 }
 
 func TestCmdResolveKeepWriteError(t *testing.T) {
-	restore := setOpenFunc(func(_ string) (storeI, error) {
+	a := newApp()
+	setOpenFunc(a, func(_ string) (storeI, error) {
 		return &mockStore{
 			getFn: func(_ string) (*model.Memory, error) {
 				return &model.Memory{ID: "k1", Content: "still valid", Tags: []string{}}, nil
 			},
 		}, nil
 	})
-	defer restore()
 
-	err := cmdResolve([]string{"--action", "keep", "--id", "k1", "--db", "test.db"}, errWriter{})
+	err := a.cmdResolve([]string{"--action", "keep", "--id", "k1", "--db", "test.db"}, errWriter{})
 	if err == nil {
 		t.Fatal("expected write error")
 	}
 }
 
 func TestCmdResolveInvalidDB(t *testing.T) {
+	a := newApp()
 	t.Parallel()
 	var buf bytes.Buffer
-	err := run([]string{"resolve", "--action", "keep", "--id", "x", "--db", "/nonexistent/path/test.db"}, &buf)
+	err := a.run([]string{"resolve", "--action", "keep", "--id", "x", "--db", "/nonexistent/path/test.db"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for invalid db path")
 	}
@@ -2200,28 +2191,24 @@ func TestCmdResolveInvalidDB(t *testing.T) {
 
 // --- setup tests ---
 
-func mockForm(system, scope string) func() {
-	old := runSetupForm
-	runSetupForm = func() (*setupConfig, error) {
+func mockForm(a *app, system, scope string) {
+	a.runSetupForm = func() (*setupConfig, error) {
 		return &setupConfig{System: system, Scope: scope}, nil
 	}
-	return func() { runSetupForm = old }
 }
 
-func mockFormErr(err error) func() {
-	old := runSetupForm
-	runSetupForm = func() (*setupConfig, error) {
+func mockFormErr(a *app, err error) {
+	a.runSetupForm = func() (*setupConfig, error) {
 		return nil, err
 	}
-	return func() { runSetupForm = old }
 }
 
 func TestCmdSetupCancelled(t *testing.T) {
-	restore := mockFormErr(fmt.Errorf("user cancelled"))
-	defer restore()
+	a := newApp()
+	mockFormErr(a, fmt.Errorf("user cancelled"))
 
 	var buf bytes.Buffer
-	err := cmdSetup(nil, &buf)
+	err := a.cmdSetup(nil, &buf)
 	if err == nil {
 		t.Fatal("expected error for cancelled setup")
 	}
@@ -2231,11 +2218,11 @@ func TestCmdSetupCancelled(t *testing.T) {
 }
 
 func TestRunSetupViaRun(t *testing.T) {
-	restore := mockFormErr(fmt.Errorf("cancelled"))
-	defer restore()
+	a := newApp()
+	mockFormErr(a, fmt.Errorf("cancelled"))
 
 	var buf bytes.Buffer
-	err := run([]string{"setup"}, &buf)
+	err := a.run([]string{"setup"}, &buf)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -2245,6 +2232,7 @@ func TestRunSetupViaRun(t *testing.T) {
 }
 
 func TestCmdSetupGlobalScope(t *testing.T) {
+	a := newApp()
 	dir := t.TempDir()
 	oldHome := os.Getenv("HOME")
 	os.Setenv("HOME", dir)
@@ -2256,11 +2244,10 @@ func TestCmdSetupGlobalScope(t *testing.T) {
 
 	os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.exe\n"), 0o644)
 
-	restore := mockForm("opencode", "global")
-	defer restore()
+	mockForm(a, "opencode", "global")
 
 	var buf bytes.Buffer
-	err := cmdSetup(nil, &buf)
+	err := a.cmdSetup(nil, &buf)
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -2313,6 +2300,7 @@ func TestCmdSetupGlobalScope(t *testing.T) {
 }
 
 func TestCmdSetupWorkspaceScope(t *testing.T) {
+	a := newApp()
 	dir := t.TempDir()
 	home := t.TempDir()
 	oldHome := os.Getenv("HOME")
@@ -2325,11 +2313,10 @@ func TestCmdSetupWorkspaceScope(t *testing.T) {
 
 	os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.exe\n"), 0o644)
 
-	restore := mockForm("opencode", "workspace")
-	defer restore()
+	mockForm(a, "opencode", "workspace")
 
 	var buf bytes.Buffer
-	err := cmdSetup(nil, &buf)
+	err := a.cmdSetup(nil, &buf)
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -2348,6 +2335,7 @@ func TestCmdSetupWorkspaceScope(t *testing.T) {
 }
 
 func TestCmdSetupGitignoreAlreadyPresent(t *testing.T) {
+	a := newApp()
 	dir := t.TempDir()
 	oldHome := os.Getenv("HOME")
 	os.Setenv("HOME", dir)
@@ -2359,11 +2347,10 @@ func TestCmdSetupGitignoreAlreadyPresent(t *testing.T) {
 
 	os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".sediment.db\n"), 0o644)
 
-	restore := mockForm("opencode", "global")
-	defer restore()
+	mockForm(a, "opencode", "global")
 
 	var buf bytes.Buffer
-	err := cmdSetup(nil, &buf)
+	err := a.cmdSetup(nil, &buf)
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -2375,6 +2362,7 @@ func TestCmdSetupGitignoreAlreadyPresent(t *testing.T) {
 }
 
 func TestCmdSetupNoGitignore(t *testing.T) {
+	a := newApp()
 	dir := t.TempDir()
 	oldHome := os.Getenv("HOME")
 	os.Setenv("HOME", dir)
@@ -2384,11 +2372,10 @@ func TestCmdSetupNoGitignore(t *testing.T) {
 	os.Chdir(dir)
 	t.Cleanup(func() { os.Chdir(oldWd) })
 
-	restore := mockForm("opencode", "global")
-	defer restore()
+	mockForm(a, "opencode", "global")
 
 	var buf bytes.Buffer
-	err := cmdSetup(nil, &buf)
+	err := a.cmdSetup(nil, &buf)
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -2404,8 +2391,8 @@ func TestCmdSetupNoGitignore(t *testing.T) {
 }
 
 func TestCmdSetupInvalidDB(t *testing.T) {
-	restore := mockForm("opencode", "workspace")
-	defer restore()
+	a := newApp()
+	mockForm(a, "opencode", "workspace")
 
 	dir := t.TempDir()
 	home := t.TempDir()
@@ -2418,7 +2405,7 @@ func TestCmdSetupInvalidDB(t *testing.T) {
 	t.Cleanup(func() { os.Chdir(oldWd) })
 
 	var buf bytes.Buffer
-	err := cmdSetup([]string{"--db", "/nonexistent/path/test.db"}, &buf)
+	err := a.cmdSetup([]string{"--db", "/nonexistent/path/test.db"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for invalid db path")
 	}
@@ -2428,6 +2415,7 @@ func TestCmdSetupInvalidDB(t *testing.T) {
 }
 
 func TestCmdSetupGitignoreNoTrailingNewline(t *testing.T) {
+	a := newApp()
 	dir := t.TempDir()
 	oldHome := os.Getenv("HOME")
 	os.Setenv("HOME", dir)
@@ -2439,11 +2427,10 @@ func TestCmdSetupGitignoreNoTrailingNewline(t *testing.T) {
 
 	os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.exe"), 0o644)
 
-	restore := mockForm("opencode", "global")
-	defer restore()
+	mockForm(a, "opencode", "global")
 
 	var buf bytes.Buffer
-	err := cmdSetup(nil, &buf)
+	err := a.cmdSetup(nil, &buf)
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -2459,6 +2446,7 @@ func TestCmdSetupGitignoreNoTrailingNewline(t *testing.T) {
 }
 
 func TestCmdSetupSkillDirPermissionDenied(t *testing.T) {
+	a := newApp()
 	dir := t.TempDir()
 	home := t.TempDir()
 	oldHome := os.Getenv("HOME")
@@ -2472,11 +2460,10 @@ func TestCmdSetupSkillDirPermissionDenied(t *testing.T) {
 	os.MkdirAll(filepath.Join(dir, ".agents", "skills"), 0o755)
 	os.WriteFile(filepath.Join(dir, ".agents", "skills", "sediment"), []byte("blocker"), 0o644)
 
-	restore := mockForm("opencode", "workspace")
-	defer restore()
+	mockForm(a, "opencode", "workspace")
 
 	var buf bytes.Buffer
-	err := cmdSetup(nil, &buf)
+	err := a.cmdSetup(nil, &buf)
 	if err == nil {
 		t.Fatal("expected error for blocked skill directory")
 	}
@@ -2486,6 +2473,7 @@ func TestCmdSetupSkillDirPermissionDenied(t *testing.T) {
 }
 
 func TestCmdSetupWriteSkillError(t *testing.T) {
+	a := newApp()
 	dir := t.TempDir()
 	home := t.TempDir()
 	oldHome := os.Getenv("HOME")
@@ -2496,17 +2484,14 @@ func TestCmdSetupWriteSkillError(t *testing.T) {
 	os.Chdir(dir)
 	t.Cleanup(func() { os.Chdir(oldWd) })
 
-	restore := mockForm("opencode", "workspace")
-	defer restore()
+	mockForm(a, "opencode", "workspace")
 
-	old := writeFile
-	writeFile = func(name string, data []byte, perm os.FileMode) error {
+	a.writeFile = func(name string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("disk full")
 	}
-	t.Cleanup(func() { writeFile = old })
 
 	var buf bytes.Buffer
-	err := cmdSetup(nil, &buf)
+	err := a.cmdSetup(nil, &buf)
 	if err == nil {
 		t.Fatal("expected write error")
 	}
@@ -2516,17 +2501,15 @@ func TestCmdSetupWriteSkillError(t *testing.T) {
 }
 
 func TestCmdSetupHomeDirError(t *testing.T) {
-	restore := mockForm("opencode", "global")
-	defer restore()
+	a := newApp()
+	mockForm(a, "opencode", "global")
 
-	old := userHomeDir
-	userHomeDir = func() (string, error) {
+	a.userHomeDir = func() (string, error) {
 		return "", fmt.Errorf("no home")
 	}
-	t.Cleanup(func() { userHomeDir = old })
 
 	var buf bytes.Buffer
-	err := cmdSetup(nil, &buf)
+	err := a.cmdSetup(nil, &buf)
 	if err == nil {
 		t.Fatal("expected error for home dir failure")
 	}
@@ -2536,6 +2519,7 @@ func TestCmdSetupHomeDirError(t *testing.T) {
 }
 
 func TestCmdSetupPluginMergesExistingPackageJSON(t *testing.T) {
+	a := newApp()
 	dir := t.TempDir()
 	oldHome := os.Getenv("HOME")
 	os.Setenv("HOME", dir)
@@ -2551,11 +2535,10 @@ func TestCmdSetupPluginMergesExistingPackageJSON(t *testing.T) {
 	os.WriteFile(filepath.Join(configDir, "package.json"),
 		[]byte(`{"dependencies":{"other-plugin":"2.0.0"}}`), 0o644)
 
-	restore := mockForm("opencode", "global")
-	defer restore()
+	mockForm(a, "opencode", "global")
 
 	var buf bytes.Buffer
-	err := cmdSetup(nil, &buf)
+	err := a.cmdSetup(nil, &buf)
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -2574,6 +2557,7 @@ func TestCmdSetupPluginMergesExistingPackageJSON(t *testing.T) {
 }
 
 func TestCmdSetupPluginOverwritesMalformedPackageJSON(t *testing.T) {
+	a := newApp()
 	dir := t.TempDir()
 	oldHome := os.Getenv("HOME")
 	os.Setenv("HOME", dir)
@@ -2589,11 +2573,10 @@ func TestCmdSetupPluginOverwritesMalformedPackageJSON(t *testing.T) {
 	os.WriteFile(filepath.Join(configDir, "package.json"),
 		[]byte(`not json`), 0o644)
 
-	restore := mockForm("opencode", "global")
-	defer restore()
+	mockForm(a, "opencode", "global")
 
 	var buf bytes.Buffer
-	err := cmdSetup(nil, &buf)
+	err := a.cmdSetup(nil, &buf)
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -2608,6 +2591,7 @@ func TestCmdSetupPluginOverwritesMalformedPackageJSON(t *testing.T) {
 }
 
 func TestCmdSetupWritePluginError(t *testing.T) {
+	a := newApp()
 	dir := t.TempDir()
 	home := t.TempDir()
 	oldHome := os.Getenv("HOME")
@@ -2618,20 +2602,18 @@ func TestCmdSetupWritePluginError(t *testing.T) {
 	os.Chdir(dir)
 	t.Cleanup(func() { os.Chdir(oldWd) })
 
-	restore := mockForm("opencode", "workspace")
-	defer restore()
+	mockForm(a, "opencode", "workspace")
 
-	old := writeFile
-	writeFile = func(name string, data []byte, perm os.FileMode) error {
+	old := a.writeFile
+	a.writeFile = func(name string, data []byte, perm os.FileMode) error {
 		if strings.HasSuffix(name, "sediment.ts") {
 			return fmt.Errorf("disk full")
 		}
 		return old(name, data, perm)
 	}
-	t.Cleanup(func() { writeFile = old })
 
 	var buf bytes.Buffer
-	err := cmdSetup(nil, &buf)
+	err := a.cmdSetup(nil, &buf)
 	if err == nil {
 		t.Fatal("expected write error")
 	}
@@ -2641,6 +2623,7 @@ func TestCmdSetupWritePluginError(t *testing.T) {
 }
 
 func TestCmdSetupPluginDirBlocked(t *testing.T) {
+	a := newApp()
 	dir := t.TempDir()
 	home := t.TempDir()
 	oldHome := os.Getenv("HOME")
@@ -2656,11 +2639,10 @@ func TestCmdSetupPluginDirBlocked(t *testing.T) {
 	os.MkdirAll(configDir, 0o755)
 	os.WriteFile(filepath.Join(configDir, "plugins"), []byte("blocker"), 0o644)
 
-	restore := mockForm("opencode", "workspace")
-	defer restore()
+	mockForm(a, "opencode", "workspace")
 
 	var buf bytes.Buffer
-	err := cmdSetup(nil, &buf)
+	err := a.cmdSetup(nil, &buf)
 	if err == nil {
 		t.Fatal("expected error for blocked plugin directory")
 	}
@@ -2670,6 +2652,7 @@ func TestCmdSetupPluginDirBlocked(t *testing.T) {
 }
 
 func TestCmdSetupPluginDepsWriteError(t *testing.T) {
+	a := newApp()
 	dir := t.TempDir()
 	home := t.TempDir()
 	oldHome := os.Getenv("HOME")
@@ -2680,20 +2663,18 @@ func TestCmdSetupPluginDepsWriteError(t *testing.T) {
 	os.Chdir(dir)
 	t.Cleanup(func() { os.Chdir(oldWd) })
 
-	restore := mockForm("opencode", "workspace")
-	defer restore()
+	mockForm(a, "opencode", "workspace")
 
-	old := writeFile
-	writeFile = func(name string, data []byte, perm os.FileMode) error {
+	old := a.writeFile
+	a.writeFile = func(name string, data []byte, perm os.FileMode) error {
 		if strings.HasSuffix(name, "package.json") {
 			return fmt.Errorf("disk full")
 		}
 		return old(name, data, perm)
 	}
-	t.Cleanup(func() { writeFile = old })
 
 	var buf bytes.Buffer
-	err := cmdSetup(nil, &buf)
+	err := a.cmdSetup(nil, &buf)
 	if err == nil {
 		t.Fatal("expected write error for package.json")
 	}
@@ -2703,20 +2684,20 @@ func TestCmdSetupPluginDepsWriteError(t *testing.T) {
 }
 
 func TestEnsurePluginDepsMalformedWriteError(t *testing.T) {
+	a := newApp()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "package.json"), []byte(`not json`), 0o644)
 
-	old := writeFile
-	writeFile = func(name string, data []byte, perm os.FileMode) error {
+	old := a.writeFile
+	a.writeFile = func(name string, data []byte, perm os.FileMode) error {
 		if strings.HasSuffix(name, "package.json") {
 			return fmt.Errorf("disk full")
 		}
 		return old(name, data, perm)
 	}
-	t.Cleanup(func() { writeFile = old })
 
 	var buf bytes.Buffer
-	err := ensurePluginDeps(dir, &buf)
+	err := a.ensurePluginDeps(dir, &buf)
 	if err == nil {
 		t.Fatal("expected write error")
 	}
@@ -2729,20 +2710,20 @@ func TestEnsurePluginDepsMalformedWriteError(t *testing.T) {
 }
 
 func TestEnsurePluginDepsMergeWriteError(t *testing.T) {
+	a := newApp()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "package.json"),
 		[]byte(`{"dependencies":{"other":"1.0.0"}}`), 0o644)
 
-	old := writeFile
-	writeFile = func(name string, data []byte, perm os.FileMode) error {
+	old := a.writeFile
+	a.writeFile = func(name string, data []byte, perm os.FileMode) error {
 		if strings.HasSuffix(name, "package.json") {
 			return fmt.Errorf("disk full")
 		}
 		return old(name, data, perm)
 	}
-	t.Cleanup(func() { writeFile = old })
 
-	err := ensurePluginDeps(dir, &bytes.Buffer{})
+	err := a.ensurePluginDeps(dir, &bytes.Buffer{})
 	if err == nil {
 		t.Fatal("expected write error")
 	}
@@ -2752,11 +2733,12 @@ func TestEnsurePluginDepsMergeWriteError(t *testing.T) {
 }
 
 func TestEnsurePluginDepsReadError(t *testing.T) {
+	a := newApp()
 	dir := t.TempDir()
 	pkgPath := filepath.Join(dir, "package.json")
 	os.MkdirAll(pkgPath, 0o755)
 
-	err := ensurePluginDeps(dir, &bytes.Buffer{})
+	err := a.ensurePluginDeps(dir, &bytes.Buffer{})
 	if err == nil {
 		t.Fatal("expected read error")
 	}
@@ -2766,6 +2748,7 @@ func TestEnsurePluginDepsReadError(t *testing.T) {
 }
 
 func TestCmdSetupPluginNoDepsKeyInPackageJSON(t *testing.T) {
+	a := newApp()
 	dir := t.TempDir()
 	oldHome := os.Getenv("HOME")
 	os.Setenv("HOME", dir)
@@ -2781,11 +2764,10 @@ func TestCmdSetupPluginNoDepsKeyInPackageJSON(t *testing.T) {
 	os.WriteFile(filepath.Join(configDir, "package.json"),
 		[]byte(`{"private": true}`), 0o644)
 
-	restore := mockForm("opencode", "global")
-	defer restore()
+	mockForm(a, "opencode", "global")
 
 	var buf bytes.Buffer
-	err := cmdSetup(nil, &buf)
+	err := a.cmdSetup(nil, &buf)
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -2852,13 +2834,14 @@ func TestPluginPkgJSONMatchesSourceFile(t *testing.T) {
 }
 
 func TestRunNoArgsNoDB(t *testing.T) {
+	a := newApp()
 	dir := t.TempDir()
 	oldWd, _ := os.Getwd()
 	os.Chdir(dir)
 	t.Cleanup(func() { os.Chdir(oldWd) })
 
 	var buf bytes.Buffer
-	err := run(nil, &buf)
+	err := a.run(nil, &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

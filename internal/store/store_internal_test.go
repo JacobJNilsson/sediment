@@ -99,7 +99,7 @@ func TestCollectMemoriesScanError(t *testing.T) {
 	}
 	defer rows.Close()
 
-	_, err = collectMemories(rows)
+	_, err = newDB(db).collectMemories(rows)
 	if err == nil {
 		t.Fatal("expected error from collectMemories with bad tags")
 	}
@@ -121,11 +121,10 @@ func TestCollectMemoriesRowsErr(t *testing.T) {
 	}
 
 	// Override rowsErr to simulate an iteration error.
-	old := rowsErr
-	rowsErr = func(_ *sql.Rows) error {
+	d := newDB(db)
+	d.rowsErr = func(_ *sql.Rows) error {
 		return fmt.Errorf("simulated rows error")
 	}
-	t.Cleanup(func() { rowsErr = old })
 
 	rows, err := db.Query(`SELECT * FROM memories`)
 	if err != nil {
@@ -133,7 +132,7 @@ func TestCollectMemoriesRowsErr(t *testing.T) {
 	}
 	defer rows.Close()
 
-	_, err = collectMemories(rows)
+	_, err = d.collectMemories(rows)
 	if err == nil {
 		t.Fatal("expected error from collectMemories")
 	}
@@ -184,15 +183,13 @@ func TestInsertNilTagsViaDB(t *testing.T) {
 	}
 }
 
-// TestOpenSqlOpenError must not be parallel: it replaces the global sqlOpen.
 func TestOpenSqlOpenError(t *testing.T) {
-	old := sqlOpen
-	sqlOpen = func(driver, dsn string) (*sql.DB, error) {
+	t.Parallel()
+	failOpen := func(driver, dsn string) (*sql.DB, error) {
 		return nil, fmt.Errorf("driver error")
 	}
-	t.Cleanup(func() { sqlOpen = old })
 
-	_, err := Open("/tmp/test.db")
+	_, err := open(failOpen, "/tmp/test.db")
 	if err == nil {
 		t.Fatal("expected error from sql.Open")
 	}
@@ -293,8 +290,8 @@ func TestRunInTxOnClosedDB(t *testing.T) {
 	}
 }
 
-// TestRunInTxCommitError must not be parallel: it replaces the global beginTx.
 func TestRunInTxCommitError(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	d, err := Open(filepath.Join(dir, "tx-commit-err.db"))
 	if err != nil {
@@ -306,14 +303,12 @@ func TestRunInTxCommitError(t *testing.T) {
 	}
 
 	// Rollback the tx before RunInTx tries to commit, making Commit fail.
-	old := beginTx
 	var sneakyTx *sql.Tx
-	beginTx = func(conn *sql.DB) (*sql.Tx, error) {
+	d.beginTx = func(conn *sql.DB) (*sql.Tx, error) {
 		tx, err := conn.Begin()
 		sneakyTx = tx
 		return tx, err
 	}
-	t.Cleanup(func() { beginTx = old })
 
 	err = d.RunInTx(func() error {
 		// Rollback behind RunInTx's back so Commit will fail.
@@ -401,7 +396,7 @@ func TestMigrateMetaSchemaError(t *testing.T) {
 	}
 	defer conn.Close()
 
-	d := &DB{exec: conn, conn: conn}
+	d := newDB(conn)
 	err = d.Migrate("")
 	if err == nil {
 		t.Fatal("expected error on corrupt db")

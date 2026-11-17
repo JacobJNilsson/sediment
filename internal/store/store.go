@@ -28,14 +28,31 @@ type executor interface {
 type DB struct {
 	conn *sql.DB
 	exec executor // points to conn normally, swapped to tx inside RunInTx
+
+	// beginTx starts a transaction. Tests replace it to force a failure.
+	beginTx func(conn *sql.DB) (*sql.Tx, error)
+	// rowsErr reads the iteration error of rows. Tests replace it to force a failure.
+	rowsErr func(rows *sql.Rows) error
 }
 
-// sqlOpen is the function used to open a sql.DB. Overridable for tests.
-var sqlOpen = sql.Open
+// newDB wraps an open connection and sets every seam to the real function.
+func newDB(conn *sql.DB) *DB {
+	return &DB{
+		conn:    conn,
+		exec:    conn,
+		beginTx: func(c *sql.DB) (*sql.Tx, error) { return c.Begin() },
+		rowsErr: func(rows *sql.Rows) error { return rows.Err() },
+	}
+}
 
 // Open creates or opens a SQLite database at the given path.
 // It verifies connectivity immediately with a ping.
 func Open(path string) (*DB, error) {
+	return open(sql.Open, path)
+}
+
+// open is Open with the driver open function as a parameter.
+func open(sqlOpen func(driver, dsn string) (*sql.DB, error), path string) (*DB, error) {
 	sqlDB, err := sqlOpen("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)")
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
@@ -44,7 +61,7 @@ func Open(path string) (*DB, error) {
 		sqlDB.Close()
 		return nil, fmt.Errorf("connect to database: %w", err)
 	}
-	return &DB{conn: sqlDB, exec: sqlDB}, nil
+	return newDB(sqlDB), nil
 }
 
 var migrations = []migrate.Migration{
@@ -189,7 +206,7 @@ func (d *DB) ListByState(state model.State) ([]*model.Memory, error) {
 		return nil, fmt.Errorf("list by state: %w", err)
 	}
 	defer rows.Close()
-	return collectMemories(rows)
+	return d.collectMemories(rows)
 }
 
 // ListAll returns all memories ordered by confidence descending.
@@ -202,19 +219,14 @@ func (d *DB) ListAll() ([]*model.Memory, error) {
 		return nil, fmt.Errorf("list all: %w", err)
 	}
 	defer rows.Close()
-	return collectMemories(rows)
-}
-
-// beginTx starts a new transaction. Overridable for tests.
-var beginTx = func(conn *sql.DB) (*sql.Tx, error) {
-	return conn.Begin()
+	return d.collectMemories(rows)
 }
 
 // RunInTx executes fn inside a database transaction. All store operations
 // called on this DB within fn will participate in the transaction. If fn
 // returns an error the transaction is rolled back. Otherwise it is committed.
 func (d *DB) RunInTx(fn func() error) error {
-	tx, err := beginTx(d.conn)
+	tx, err := d.beginTx(d.conn)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
@@ -272,12 +284,7 @@ func scanMemory(s scanner) (*model.Memory, error) {
 	return &m, nil
 }
 
-// rowsIterator abstracts sql.Rows for testing. Overridable for tests.
-var rowsErr = func(rows *sql.Rows) error {
-	return rows.Err()
-}
-
-func collectMemories(rows *sql.Rows) ([]*model.Memory, error) {
+func (d *DB) collectMemories(rows *sql.Rows) ([]*model.Memory, error) {
 	var memories []*model.Memory
 	for rows.Next() {
 		m, err := scanMemory(rows)
@@ -286,7 +293,7 @@ func collectMemories(rows *sql.Rows) ([]*model.Memory, error) {
 		}
 		memories = append(memories, m)
 	}
-	if err := rowsErr(rows); err != nil {
+	if err := d.rowsErr(rows); err != nil {
 		return nil, fmt.Errorf("iterate rows: %w", err)
 	}
 	return memories, nil

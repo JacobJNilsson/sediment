@@ -365,32 +365,42 @@ type storeI interface {
 	SetMeta(key, value string) error
 }
 
-// openFunc is the function used to open a database. Overridable for tests.
-var openFunc = func(path string) (storeI, error) {
-	return store.Open(path)
+// app runs the commands. Every field is a seam that the constructor sets to
+// the real function. Production code never assigns them. A test builds an
+// app and replaces one field.
+type app struct {
+	openFunc     func(path string) (storeI, error)
+	absFunc      func(path string) (string, error)
+	newUUID      func() string
+	timeNow      func() time.Time
+	userHomeDir  func() (string, error)
+	writeFile    func(name string, data []byte, perm os.FileMode) error
+	statFile     func(name string) (os.FileInfo, error)
+	runSetupForm func() (*setupConfig, error)
 }
 
-// absFunc wraps filepath.Abs. Overridable for tests.
-var absFunc = filepath.Abs
-
-// newUUID generates a new UUID string. Overridable for tests.
-var newUUID = func() string {
-	return uuid.New().String()
+// newApp returns an app wired to the real file system, clock and terminal.
+func newApp() *app {
+	return &app{
+		openFunc: func(path string) (storeI, error) {
+			return store.Open(path)
+		},
+		absFunc: filepath.Abs,
+		newUUID: func() string {
+			return uuid.New().String()
+		},
+		timeNow:      time.Now,
+		userHomeDir:  os.UserHomeDir,
+		writeFile:    os.WriteFile,
+		statFile:     os.Stat,
+		runSetupForm: interactiveSetupForm,
+	}
 }
-
-// timeNow returns the current time. Overridable for tests.
-var timeNow = time.Now
-
-// userHomeDir wraps os.UserHomeDir. Overridable for tests.
-var userHomeDir = os.UserHomeDir
-
-// writeFile wraps os.WriteFile. Overridable for tests.
-var writeFile = os.WriteFile
 
 var version = "dev"
 
 func main() {
-	if err := run(os.Args[1:], os.Stdout); err != nil {
+	if err := newApp().run(os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
@@ -405,12 +415,9 @@ func isHelp(args []string) bool {
 	return false
 }
 
-// statFile wraps os.Stat for testability.
-var statFile = os.Stat
-
-func run(args []string, w io.Writer) error {
+func (a *app) run(args []string, w io.Writer) error {
 	if len(args) == 0 {
-		if _, err := statFile(defaultDBFile); os.IsNotExist(err) {
+		if _, err := a.statFile(defaultDBFile); os.IsNotExist(err) {
 			fmt.Fprintln(w, "sediment is not set up in this directory.\n\nRun 'sediment setup' to get started.")
 			return nil
 		}
@@ -438,23 +445,23 @@ func run(args []string, w io.Writer) error {
 
 	switch cmd {
 	case "init":
-		return cmdInit(rest, w)
+		return a.cmdInit(rest, w)
 	case "status":
-		return cmdStatus(rest, w)
+		return a.cmdStatus(rest, w)
 	case "deposit":
-		return cmdDeposit(rest, w)
+		return a.cmdDeposit(rest, w)
 	case "strata":
-		return cmdStrata(rest, w)
+		return a.cmdStrata(rest, w)
 	case "excavate":
-		return cmdExcavate(rest, w)
+		return a.cmdExcavate(rest, w)
 	case "erode":
-		return cmdErode(rest, w)
+		return a.cmdErode(rest, w)
 	case "compact":
-		return cmdCompact(rest, w)
+		return a.cmdCompact(rest, w)
 	case "resolve":
-		return cmdResolve(rest, w)
+		return a.cmdResolve(rest, w)
 	case "setup":
-		return cmdSetup(rest, w)
+		return a.cmdSetup(rest, w)
 	default:
 		return fmt.Errorf("unknown command: %s (run 'sediment --help' for usage)", cmd)
 	}
@@ -485,12 +492,12 @@ func writeJSON(w io.Writer, v any) error {
 	return err
 }
 
-func openAndMigrate(args []string) (db storeI, absPath string, err error) {
-	absPath, err = absFunc(flagValueDefault(args, "--db", defaultDBFile))
+func (a *app) openAndMigrate(args []string) (db storeI, absPath string, err error) {
+	absPath, err = a.absFunc(flagValueDefault(args, "--db", defaultDBFile))
 	if err != nil {
 		return nil, "", fmt.Errorf("resolve path: %w", err)
 	}
-	db, err = openFunc(absPath)
+	db, err = a.openFunc(absPath)
 	if err != nil {
 		return nil, "", err
 	}
@@ -502,8 +509,8 @@ func openAndMigrate(args []string) (db storeI, absPath string, err error) {
 	return db, absPath, nil
 }
 
-func cmdInit(args []string, w io.Writer) error {
-	db, absPath, err := openAndMigrate(args)
+func (a *app) cmdInit(args []string, w io.Writer) error {
+	db, absPath, err := a.openAndMigrate(args)
 	if err != nil {
 		return err
 	}
@@ -515,8 +522,8 @@ func cmdInit(args []string, w io.Writer) error {
 	})
 }
 
-func cmdStatus(args []string, w io.Writer) error {
-	db, absPath, err := openAndMigrate(args)
+func (a *app) cmdStatus(args []string, w io.Writer) error {
+	db, absPath, err := a.openAndMigrate(args)
 	if err != nil {
 		return err
 	}
@@ -548,7 +555,7 @@ func cmdStatus(args []string, w io.Writer) error {
 	})
 }
 
-func cmdDeposit(args []string, w io.Writer) error {
+func (a *app) cmdDeposit(args []string, w io.Writer) error {
 	content := flagValue(args, "--content")
 	if content == "" {
 		return fmt.Errorf("--content is required")
@@ -578,15 +585,15 @@ func cmdDeposit(args []string, w io.Writer) error {
 		}
 	}
 
-	db, _, err := openAndMigrate(args)
+	db, _, err := a.openAndMigrate(args)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
 
-	now := timeNow()
+	now := a.timeNow()
 	m := &model.Memory{
-		ID:             newUUID(),
+		ID:             a.newUUID(),
 		Content:        content,
 		Confidence:     1.0,
 		State:          model.StateActive,
@@ -606,8 +613,8 @@ func cmdDeposit(args []string, w io.Writer) error {
 	return writeJSON(w, m)
 }
 
-func cmdStrata(args []string, w io.Writer) error {
-	db, _, err := openAndMigrate(args)
+func (a *app) cmdStrata(args []string, w io.Writer) error {
+	db, _, err := a.openAndMigrate(args)
 	if err != nil {
 		return err
 	}
@@ -632,13 +639,13 @@ func cmdStrata(args []string, w io.Writer) error {
 	return writeJSON(w, memories)
 }
 
-func cmdExcavate(args []string, w io.Writer) error {
+func (a *app) cmdExcavate(args []string, w io.Writer) error {
 	id := flagValue(args, "--id")
 	if id == "" {
 		return fmt.Errorf("--id is required")
 	}
 
-	db, _, err := openAndMigrate(args)
+	db, _, err := a.openAndMigrate(args)
 	if err != nil {
 		return err
 	}
@@ -650,7 +657,7 @@ func cmdExcavate(args []string, w io.Writer) error {
 	}
 
 	cfg := decay.DefaultConfig()
-	now := timeNow()
+	now := a.timeNow()
 
 	// Snapshot the decayed confidence before reinforcement so the caller
 	// can see how much the memory had faded. Reinforce also calls
@@ -683,22 +690,22 @@ const (
 	deepErodeEveryN          = 10
 )
 
-func cmdErode(args []string, w io.Writer) error {
+func (a *app) cmdErode(args []string, w io.Writer) error {
 	auto := slices.Contains(args, "--auto")
 
-	db, _, err := openAndMigrate(args)
+	db, _, err := a.openAndMigrate(args)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
 
 	if auto {
-		return autoErode(db, w)
+		return a.autoErode(db, w)
 	}
-	return erodeAll(db, w)
+	return a.erodeAll(db, w)
 }
 
-func autoErode(db storeI, w io.Writer) error {
+func (a *app) autoErode(db storeI, w io.Writer) error {
 	sessionCount := bumpSession(db)
 
 	active, err := db.ListByState(model.StateActive)
@@ -716,7 +723,7 @@ func autoErode(db storeI, w io.Writer) error {
 		level = "standard"
 	}
 
-	result, err := runErosion(db, level)
+	result, err := a.runErosion(db, level)
 	if err != nil {
 		return err
 	}
@@ -724,7 +731,7 @@ func autoErode(db storeI, w io.Writer) error {
 	result["session"] = sessionCount
 	result["active_count"] = len(active)
 
-	db.SetMeta(metaLastErode, timeNow().Format(time.RFC3339))
+	db.SetMeta(metaLastErode, a.timeNow().Format(time.RFC3339))
 
 	return writeJSON(w, result)
 }
@@ -740,7 +747,7 @@ func bumpSession(db storeI) int {
 	return count
 }
 
-func runErosion(db storeI, level string) (map[string]any, error) {
+func (a *app) runErosion(db storeI, level string) (map[string]any, error) {
 	var memories []*model.Memory
 	var err error
 
@@ -764,12 +771,12 @@ func runErosion(db storeI, level string) (map[string]any, error) {
 		return nil, fmt.Errorf("erode list: %w", err)
 	}
 
-	return applyErosion(db, memories)
+	return a.applyErosion(db, memories)
 }
 
-func applyErosion(db storeI, memories []*model.Memory) (map[string]any, error) {
+func (a *app) applyErosion(db storeI, memories []*model.Memory) (map[string]any, error) {
 	cfg := decay.DefaultConfig()
-	now := timeNow()
+	now := a.timeNow()
 
 	transitions := []erodeTransition{}
 	updated := 0
@@ -832,13 +839,13 @@ func applyErosion(db storeI, memories []*model.Memory) (map[string]any, error) {
 	}, nil
 }
 
-func erodeAll(db storeI, w io.Writer) error {
+func (a *app) erodeAll(db storeI, w io.Writer) error {
 	all, err := db.ListAll()
 	if err != nil {
 		return fmt.Errorf("erode list: %w", err)
 	}
 
-	result, err := applyErosion(db, all)
+	result, err := a.applyErosion(db, all)
 	if err != nil {
 		return err
 	}
@@ -849,8 +856,8 @@ func erodeAll(db storeI, w io.Writer) error {
 //   - Without --apply: lists dormant/archived memories as compression candidates.
 //   - With --apply: replaces a set of source memories with a single compacted memory.
 //     The agent is expected to have already synthesised the compressed content.
-func cmdCompact(args []string, w io.Writer) error {
-	db, _, err := openAndMigrate(args)
+func (a *app) cmdCompact(args []string, w io.Writer) error {
+	db, _, err := a.openAndMigrate(args)
 	if err != nil {
 		return err
 	}
@@ -858,13 +865,13 @@ func cmdCompact(args []string, w io.Writer) error {
 
 	applyContent := flagValue(args, "--apply")
 	if applyContent != "" {
-		return compactApply(db, args, applyContent, w)
+		return a.compactApply(db, args, applyContent, w)
 	}
-	return compactCandidates(db, w)
+	return a.compactCandidates(db, w)
 }
 
 // compactCandidates lists dormant and archived memories that could be compressed.
-func compactCandidates(db storeI, w io.Writer) error {
+func (a *app) compactCandidates(db storeI, w io.Writer) error {
 	dormant, err := db.ListByState(model.StateDormant)
 	if err != nil {
 		return fmt.Errorf("compact list dormant: %w", err)
@@ -882,7 +889,7 @@ func compactCandidates(db storeI, w io.Writer) error {
 }
 
 // compactApply replaces source memories with a single compressed memory.
-func compactApply(db storeI, args []string, content string, w io.Writer) error {
+func (a *app) compactApply(db storeI, args []string, content string, w io.Writer) error {
 	sourceIDs := flagValue(args, "--sources")
 	if sourceIDs == "" {
 		return fmt.Errorf("--sources is required with --apply")
@@ -916,9 +923,9 @@ func compactApply(db storeI, args []string, content string, w io.Writer) error {
 	}
 	slices.Sort(tags)
 
-	now := timeNow()
+	now := a.timeNow()
 	m := &model.Memory{
-		ID:             newUUID(),
+		ID:             a.newUUID(),
 		Content:        content,
 		Confidence:     0.8, // compacted memories start slightly below full confidence
 		State:          model.StateActive,
@@ -960,7 +967,7 @@ func compactApply(db storeI, args []string, content string, w io.Writer) error {
 //   - --action=update --id=<id> --content=<new>  Update existing memory's content.
 //   - --action=supersede --id=<id> --content=<new>  Archive old, deposit new.
 //   - --action=keep --id=<id>  Keep the existing memory, no change (just acknowledge).
-func cmdResolve(args []string, w io.Writer) error {
+func (a *app) cmdResolve(args []string, w io.Writer) error {
 	action := flagValue(args, "--action")
 	if action == "" {
 		return fmt.Errorf("--action is required (update|supersede|keep)")
@@ -970,7 +977,7 @@ func cmdResolve(args []string, w io.Writer) error {
 		return fmt.Errorf("--id is required")
 	}
 
-	db, _, err := openAndMigrate(args)
+	db, _, err := a.openAndMigrate(args)
 	if err != nil {
 		return err
 	}
@@ -981,7 +988,7 @@ func cmdResolve(args []string, w io.Writer) error {
 		return fmt.Errorf("resolve get: %w", err)
 	}
 
-	now := timeNow()
+	now := a.timeNow()
 
 	switch action {
 	case "update":
@@ -1018,7 +1025,7 @@ func cmdResolve(args []string, w io.Writer) error {
 			hardness = model.HardnessDefault
 		}
 		newMem := &model.Memory{
-			ID:             newUUID(),
+			ID:             a.newUUID(),
 			Content:        content,
 			Confidence:     1.0,
 			State:          model.StateActive,
@@ -1071,9 +1078,10 @@ type setupConfig struct {
 	Scope  string
 }
 
-// runSetupForm is the function that presents the interactive form.
-// Overridable for tests.
-var runSetupForm = func() (*setupConfig, error) {
+// interactiveSetupForm presents the interactive form. It is a variable so the
+// coverage gate treats it like the other real functions: only a terminal can
+// run it. Tests never assign it. They replace the app field instead.
+var interactiveSetupForm = func() (*setupConfig, error) {
 	var system, scope string
 
 	err := huh.NewForm(
@@ -1100,13 +1108,13 @@ var runSetupForm = func() (*setupConfig, error) {
 	return &setupConfig{System: system, Scope: scope}, nil
 }
 
-func cmdSetup(args []string, w io.Writer) error {
-	cfg, err := runSetupForm()
+func (a *app) cmdSetup(args []string, w io.Writer) error {
+	cfg, err := a.runSetupForm()
 	if err != nil {
 		return fmt.Errorf("setup cancelled: %w", err)
 	}
 
-	home, err := userHomeDir()
+	home, err := a.userHomeDir()
 	if err != nil {
 		return fmt.Errorf("resolve home directory: %w", err)
 	}
@@ -1125,20 +1133,20 @@ func cmdSetup(args []string, w io.Writer) error {
 	}
 
 	skillPath := filepath.Join(skillDir, "SKILL.md")
-	if err := writeFile(skillPath, []byte(skillContent), 0o644); err != nil {
+	if err := a.writeFile(skillPath, []byte(skillContent), 0o644); err != nil {
 		return fmt.Errorf("write skill file: %w", err)
 	}
 
 	absSkillPath, _ := filepath.Abs(skillPath)
 
 	// Plugin installation (always global).
-	pluginPath, err := installPlugin(home)
+	pluginPath, err := a.installPlugin(home)
 	if err != nil {
 		return err
 	}
 
 	// Database initialisation (repo-local).
-	db, absDBPath, err := openAndMigrate(args)
+	db, absDBPath, err := a.openAndMigrate(args)
 	if err != nil {
 		return err
 	}
@@ -1164,7 +1172,7 @@ func cmdSetup(args []string, w io.Writer) error {
 // installPlugin writes the OpenCode plugin and its package.json to the global
 // config directory (~/.config/opencode/). If a package.json already exists it
 // is preserved and the dependency is merged in.
-func installPlugin(home string) (string, error) {
+func (a *app) installPlugin(home string) (string, error) {
 	configDir := filepath.Join(home, ".config", "opencode")
 	pluginDir := filepath.Join(configDir, "plugins")
 
@@ -1173,11 +1181,11 @@ func installPlugin(home string) (string, error) {
 	}
 
 	pluginPath := filepath.Join(pluginDir, "sediment.ts")
-	if err := writeFile(pluginPath, []byte(pluginContent), 0o644); err != nil {
+	if err := a.writeFile(pluginPath, []byte(pluginContent), 0o644); err != nil {
 		return "", fmt.Errorf("write plugin file: %w", err)
 	}
 
-	if err := ensurePluginDeps(configDir, os.Stderr); err != nil {
+	if err := a.ensurePluginDeps(configDir, os.Stderr); err != nil {
 		return "", err
 	}
 
@@ -1188,14 +1196,14 @@ func installPlugin(home string) (string, error) {
 // @opencode-ai/plugin dependency. If the file doesn't exist it is created
 // from pluginPkgJSON. If it exists the dependency is merged without
 // overwriting other entries.
-func ensurePluginDeps(configDir string, w io.Writer) error {
+func (a *app) ensurePluginDeps(configDir string, w io.Writer) error {
 	pkgPath := filepath.Join(configDir, "package.json")
 	existing, err := os.ReadFile(pkgPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("read plugin dependencies: %w", err)
 		}
-		if err := writeFile(pkgPath, []byte(pluginPkgJSON), 0o644); err != nil {
+		if err := a.writeFile(pkgPath, []byte(pluginPkgJSON), 0o644); err != nil {
 			return fmt.Errorf("write plugin dependencies: %w", err)
 		}
 		return nil
@@ -1204,7 +1212,7 @@ func ensurePluginDeps(configDir string, w io.Writer) error {
 	var pkg map[string]any
 	if err := json.Unmarshal(existing, &pkg); err != nil {
 		fmt.Fprintf(w, "warning: existing package.json was malformed, replacing it\n")
-		if err := writeFile(pkgPath, []byte(pluginPkgJSON), 0o644); err != nil {
+		if err := a.writeFile(pkgPath, []byte(pluginPkgJSON), 0o644); err != nil {
 			return fmt.Errorf("write plugin dependencies: %w", err)
 		}
 		return nil
@@ -1220,7 +1228,7 @@ func ensurePluginDeps(configDir string, w io.Writer) error {
 	// json.MarshalIndent cannot fail on map[string]any with basic-type values.
 	out, _ := json.MarshalIndent(pkg, "", "  ")
 	out = append(out, '\n')
-	if err := writeFile(pkgPath, out, 0o644); err != nil {
+	if err := a.writeFile(pkgPath, out, 0o644); err != nil {
 		return fmt.Errorf("write plugin dependencies: %w", err)
 	}
 	return nil

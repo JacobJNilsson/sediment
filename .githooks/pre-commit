@@ -13,6 +13,9 @@ fi
 echo "==> go vet"
 go vet ./...
 
+echo "==> anti-slop"
+make antislop
+
 echo "==> tests + coverage"
 go test -race -coverprofile=coverage.out -covermode=atomic ./...
 

@@ -29,6 +29,9 @@ jobs:
       - name: Lint
         run: go vet ./...
 
+      - name: Anti-slop
+        run: make antislop
+
       - name: Test with coverage
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
 
